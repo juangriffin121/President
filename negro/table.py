@@ -100,8 +100,11 @@ class Table:
     def get_starting_player(self, presidente: Player | None) -> int:
         if presidente:
             return presidente.id
-        else:
-            return 0
+        for i, player in enumerate(self.players):
+            for card in player.hand:
+                if isinstance(card, Card) and card.num == 2 and card.suit == "🪙":
+                    return i
+        return 0
 
     def exchange_cards(self, presidente, negro, vise_presidente, vis_negro):
         def take_best(player, count):
@@ -171,22 +174,28 @@ class Table:
         self.bin = []
         self.winners.append(loser)
 
+        vices = True
+        n = len(self.winners)
+        presidente_idx = 0
+        vice_presidente_idx = 1
+        vice_negro_idx = n - 2
+        negro_idx = n - 1
+
+        if vice_presidente_idx == vice_negro_idx:
+            vices = False
+
         for i, player in enumerate(self.winners):
-            n = len(self.winners)
-            idx = (
-                i if i < n - 2 else i - n
-            )  # match case doesnt let me compare with n for whatever reason
-            match idx:
-                case 0:
-                    performance = 2
-                case 1:
-                    performance = 1
-                case -2:
-                    performance = -1
-                case -1:
-                    performance = -2
-                case _:
-                    performance = 0
+            is_presidente = i == presidente_idx
+            is_negro = i == negro_idx
+            is_vice_presidente = i == vice_presidente_idx if vices else False
+            is_vice_negro = i == vice_negro_idx if vices else False
+
+            performance = 0
+            performance = 2 if is_presidente else performance
+            performance = -2 if is_negro else performance
+            performance = 1 if is_vice_presidente else performance
+            performance = -1 if is_vice_negro else performance
+
             player.inform_of_results(performance)
 
     def __repr__(self) -> str:

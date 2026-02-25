@@ -14,8 +14,8 @@ class Agent:
         self.frozen = False
         self.weights: ndarray | None = None
         self.dt = 0.6
-        self.baseline = 0.0
-        self.baseline_decay = 0.99
+        # self.baseline = 0.0
+        # self.baseline_decay = 0.99
         self.temperature = 3.0
 
     def choose_cards(
@@ -40,10 +40,11 @@ class Agent:
 
     def update(self, reward):
         assert not self.frozen
-        self.baseline = (
-            self.baseline_decay * self.baseline + (1 - self.baseline_decay) * reward
-        )
-        advantage = reward - self.baseline
+        # baseline seems not to affect much
+        # self.baseline = (
+        #     self.baseline_decay * self.baseline + (1 - self.baseline_decay) * reward
+        # )
+        advantage = reward  # - self.baseline
         for features, choice_idx, probs in self.trajectory:
             one_hot = np.zeros(probs.shape[0])
             one_hot[choice_idx] = 1
@@ -88,6 +89,12 @@ class Agent:
         valid = [choice for choice in possible if valid_choice(choice, last_played)]
         valid.append(None)
         return valid
+
+    def freeze(self):
+        self.frozen = True
+
+    def unfreeze(self):
+        self.frozen = False
 
     def get_features(
         self,
