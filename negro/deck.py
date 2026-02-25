@@ -2,6 +2,8 @@ import numpy as np
 from card import Card, Joker
 import random
 
+# random.seed(1)
+
 
 class Deck:
     def __init__(self) -> None:
