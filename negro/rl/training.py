@@ -1,11 +1,11 @@
 from dataclasses import dataclass, field
 from typing import Callable
 
-from player import Player, set_sleep_enabled
-from rl_numpy import Agent
-from strategy import AgentStrategy, Smallest
-from table import Table
-from ui import writes
+from negro.player import Player, set_sleep_enabled
+from negro.rl.agent import Agent, LinearAgent, MLPAgent
+from negro.strategy import AgentStrategy, Smallest
+from negro.table import Table
+from negro.ui import writes
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -26,7 +26,7 @@ def train(
     set_sleep_enabled(False)
 
     if agent is None:
-        agent = Agent()
+        agent = MLPAgent((5,))
 
     agent_strategy = AgentStrategy(agent)
     p1 = Player("p1", Smallest())
@@ -36,12 +36,14 @@ def train(
     a = Player("agent", agent_strategy)
 
     log = TrainingLog()
+    starting_dt = agent.dt
+    starting_temp = agent.temperature
     for game_idx in range(num_games):
         if game_idx > 0 and game_idx % 200 == 0:
-            agent.temperature = max(0.3, agent.temperature * 0.80)
-            agent.dt = max(0.05, agent.dt * 0.90)
+            agent.temperature = max(0.1 * starting_temp, agent.temperature * 0.90)
+            agent.dt = max(0.1 * starting_dt, agent.dt * 0.90)
 
-        t = Table([p1, p2, p3, p4, a])
+        t = Table([p1, p2, a])
         t.game()
         log.rewards.append(agent_strategy.last_reward or 0)
 
@@ -65,6 +67,8 @@ def test(
     agent_strategy = AgentStrategy(agent)
     p1 = Player("p1", Smallest())
     p2 = Player("p2", Smallest())
+    p3 = Player("p3", Smallest())
+    p4 = Player("p4", Smallest())
     a = Player("agent", agent_strategy)
 
     log = TrainingLog()

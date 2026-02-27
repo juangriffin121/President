@@ -1,22 +1,20 @@
+from abc import ABC, abstractmethod
 from numpy import ndarray
 import numpy as np
-from card import Card, Joker
-from state import GlobalState, PlayerState
-from rules import valid_choice
-from utils import possible_sets
-from ranking import get_num, order_num
+from negro.card import Card, Joker
+from negro.state import GlobalState, PlayerState
+from negro.rules import valid_choice
+from negro.utils import possible_sets
+from negro.ranking import get_num, order_num
 
 
-class Agent:
+class Agent(ABC):
     def __init__(self) -> None:
         self.trajectory = []
         self.worst_chosen: list[Card | Joker] = []
         self.frozen = False
-        self.weights: ndarray | None = None
-        self.dt = 0.6
-        # self.baseline = 0.0
-        # self.baseline_decay = 0.99
-        self.temperature = 3.0
+        self.dt = 0.2  # 0.6 for linear
+        self.temperature = 2.0  # 3.0 for linear
 
     def choose_cards(
         self, state: GlobalState, player_state
@@ -24,13 +22,16 @@ class Agent:
         last_played = state.played[-1] if state.played else None
         valid_actions = self.get_valid_actions(last_played, player_state.hand)
         features = self.get_features(state, player_state, valid_actions)
-        if self.weights is None:
-            self.weights = np.random.normal(0.0, 4, size=features.shape[1])
+        self.init_weights(features.shape[1])
         probs = self.get_probabilities(features)
         choice_idx, choice = self.choose(valid_actions, probs)
         if not self.frozen:
             self.trajectory.append((features, choice_idx, probs))
         return choice
+
+    @abstractmethod
+    def init_weights(self, num_features) -> None:
+        raise NotImplementedError
 
     def choose_worst(self, count, hand):
         # code
@@ -38,31 +39,13 @@ class Agent:
             pass
             # self.worst_chosen =
 
-    def update(self, reward):
-        assert not self.frozen
-        # baseline seems not to affect much
-        # self.baseline = (
-        #     self.baseline_decay * self.baseline + (1 - self.baseline_decay) * reward
-        # )
-        advantage = reward  # - self.baseline
-        for features, choice_idx, probs in self.trajectory:
-            one_hot = np.zeros(probs.shape[0])
-            one_hot[choice_idx] = 1
-            grad = advantage * (one_hot - probs)
-            self.weights += self.dt * grad @ features
-        self.trajectory = []
+    @abstractmethod
+    def update(self, reward: int) -> None:
+        raise NotImplementedError
 
+    @abstractmethod
     def get_probabilities(self, features: ndarray) -> ndarray:
-        assert self.weights is not None
-        if features.size == 0:  # No possible actions
-            return np.zeros(features.shape[0], dtype=float)
-        scores = (features @ self.weights) / max(self.temperature, 1e-6)
-        max_score = np.max(scores) if scores.size else 0
-        exp_scores = np.exp(scores - max_score)
-        total = exp_scores.sum()
-        if total <= 0:
-            return np.zeros_like(exp_scores)
-        return exp_scores / total
+        raise NotImplementedError
 
     def choose(
         self, actions: list[list[Card | Joker] | None], probs: ndarray
@@ -223,3 +206,141 @@ class Agent:
             feature_rows.append(state_features + action_features)
 
         return np.array(feature_rows, dtype=float)
+
+
+class LinearAgent(Agent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.weights: ndarray | None = None
+
+    def init_weights(self, num_features) -> None:
+        if self.weights is None:
+            self.weights = np.random.normal(0.0, 4, size=num_features)
+
+    def update(self, reward: int) -> None:
+        assert not self.frozen
+        for features, choice_idx, probs in self.trajectory:
+            self.update_weights(features, choice_idx, probs, reward)
+        self.trajectory = []
+
+    def update_weights(
+        self, features: ndarray, choice_idx: int, probs: ndarray, reward: int
+    ) -> None:
+        assert self.weights is not None
+        grad = softmax_grad(probs, self.temperature, choice_idx, reward)
+        self.weights += self.dt * grad @ features
+
+    def get_probabilities(self, features: ndarray) -> ndarray:
+        assert self.weights is not None
+        if features.size == 0:  # No possible actions
+            return np.zeros(features.shape[0], dtype=float)
+        scores = features @ self.weights
+        return softmax(scores, self.temperature)
+
+
+class MLPAgent(Agent):
+    def __init__(self, hidden_layers_sizes: tuple[int, ...]) -> None:
+        super().__init__()
+        self.hidden_layers_sizes = hidden_layers_sizes
+        self.weights: list[ndarray] | None = None
+        self.biases: list[ndarray] | None = None
+        self.neuron_log: list[tuple[list[ndarray], list[ndarray]]] = []
+
+    def init_weights(self, num_features) -> None:
+        if self.weights is None:
+            # layers_shape contains hidden layer sizes only.
+            layer_sizes = (num_features, *self.hidden_layers_sizes, 1)
+            self.weights = []
+            self.biases = []
+            for layer_size, next_layer_size in zip(layer_sizes, layer_sizes[1:]):
+                self.weights.append(
+                    np.random.normal(0.0, 0.1, size=(layer_size, next_layer_size))
+                )
+                self.biases.append(np.random.normal(0.0, 0.1, size=(next_layer_size)))
+
+    def update(self, reward: int) -> None:
+        assert not self.frozen
+        for (_, choice_idx, probs), (x_cache, y_cache) in zip(
+            self.trajectory, self.neuron_log
+        ):
+            self.update_weights(choice_idx, probs, reward, x_cache, y_cache)
+        self.trajectory = []
+        self.neuron_log = []
+
+    def update_weights(
+        self,
+        choice_idx: int,
+        probs: ndarray,
+        reward: int,
+        x_cache: list[ndarray],
+        y_cache: list[ndarray],
+    ) -> None:
+        assert self.weights is not None
+        assert self.biases is not None
+
+        dy = softmax_grad(probs, self.temperature, choice_idx, reward)[:, None]
+
+        for i in reversed(range(len(self.weights))):
+            w = self.weights[i]
+            x = x_cache[i]
+
+            dW = x.T @ dy
+            db = dy.sum(axis=0)  # b is shape (1,)
+
+            if i > 0:
+                dX = dy @ w.T
+                y = y_cache[i - 1]
+                dy = dX * leaky_relu_grad(y)
+
+            self.weights[i] += self.dt * dW
+            self.biases[i] += self.dt * db
+
+    def get_probabilities(self, features: ndarray) -> ndarray:
+        assert self.weights is not None
+        assert self.biases is not None
+        if features.size == 0:  # No possible actions
+            return np.zeros(features.shape[0], dtype=float)
+
+        x = features  # shape is (A, F)
+        last_idx = len(self.weights) - 1
+        x_cache = []
+        y_cache = []
+        for i, (w, b) in enumerate(zip(self.weights, self.biases)):
+            x_cache.append(x)
+            y = x @ w + b  # w shape is (H-, H+) b:(H+,) (hidden) x:(A, H-) y:(A, H+)
+            y_cache.append(y)
+            if i == last_idx:
+                x = y
+            else:
+                x = leaky_relu(y)
+
+        if not self.frozen:
+            self.neuron_log.append((x_cache, y_cache))
+
+        x = x.squeeze(1)
+
+        return softmax(x, self.temperature)
+
+
+def leaky_relu(x: ndarray) -> ndarray:
+    return np.where(x > 0, x, 0.1 * x)
+
+
+def leaky_relu_grad(y: ndarray) -> ndarray:
+    return np.where(y > 0, 1, 0.1)
+
+
+def softmax(x: ndarray, temp: float) -> ndarray:
+    x = x / max(temp, 1e-6)
+    max_x = np.max(x) if x.size else 0
+    exp_x = np.exp(x - max_x)
+    total = exp_x.sum()
+    if total <= 0:
+        return np.zeros_like(exp_x)
+    return exp_x / total
+
+
+def softmax_grad(y: ndarray, temp: float, choice_idx: int, reward: int) -> ndarray:
+    one_hot = np.zeros(y.shape[0])
+    one_hot[choice_idx] = 1
+    return reward * (one_hot - y) / max(temp, 1e-6)

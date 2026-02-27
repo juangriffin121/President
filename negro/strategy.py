@@ -1,12 +1,10 @@
 from abc import ABC, abstractmethod
-from card import Card, Joker
-from state import PlayerState
-from rl_numpy import Agent
-from ui import writes
-from ranking import get_num, order_num, sort_hand
-from state import GlobalState
-from ui import reads
-from utils import possible_sets
+from negro.card import Card, Joker
+from negro.state import GlobalState, PlayerState
+from negro.rl.agent import Agent
+from negro.ui import reads, writes
+from negro.ranking import get_num, order_num, sort_hand
+from negro.utils import possible_sets
 
 
 class Strategy(ABC):

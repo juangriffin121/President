@@ -1,4 +1,4 @@
-from card import Card, Joker
+from negro.card import Card, Joker
 
 HIGHEST_RANK = 13
 

@@ -1,5 +1,5 @@
-from card import Card, Joker
-from ui import writes
+from negro.card import Card, Joker
+from negro.ui import writes
 
 
 def prompt_indices(prompt: str, hand: list[Card | Joker]) -> list[int] | None:
@@ -14,7 +14,9 @@ def prompt_indices(prompt: str, hand: list[Card | Joker]) -> list[int] | None:
         try:
             idxs = [int(x) for x in parts]
         except ValueError:
-            writes.write(f"{writes.ANSI_RED}Invalid input. Use integers only.{writes.ANSI_RESET}")
+            writes.write(
+                f"{writes.ANSI_RED}Invalid input. Use integers only.{writes.ANSI_RESET}"
+            )
             continue
         if not idxs:
             return []

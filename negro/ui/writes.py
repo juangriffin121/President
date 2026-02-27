@@ -1,4 +1,4 @@
-from card import Card, Joker
+from negro.card import Card, Joker
 
 ANSI_RESET = "\033[0m"
 ANSI_RED = "\033[31m"

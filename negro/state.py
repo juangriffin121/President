@@ -1,7 +1,6 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
-from card import Card, Joker
+from negro.card import Card, Joker
 
 
 @dataclass

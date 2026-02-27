@@ -1,5 +1,5 @@
 import numpy as np
-from card import Card, Joker
+from negro.card import Card, Joker
 import random
 
 # random.seed(1)

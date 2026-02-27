@@ -1,11 +1,10 @@
-from deck import Deck
-from card import Card, Joker
-from rules import valid_choice
-from ranking import sort_hand
-from strategy import Smallest, UserStrategy
-from player import Player
-from state import GlobalState
-from ui import writes
+from negro.deck import Deck
+from negro.card import Card, Joker
+from negro.rules import valid_choice
+from negro.ranking import sort_hand
+from negro.player import Player
+from negro.state import GlobalState
+from negro.ui import writes
 
 
 class Table:

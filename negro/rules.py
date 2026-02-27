@@ -1,5 +1,5 @@
-from card import Card, Joker
-from ranking import get_num, order_num
+from negro.card import Card, Joker
+from negro.ranking import get_num, order_num
 
 
 def valid_choice(

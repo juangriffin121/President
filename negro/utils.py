@@ -1,8 +1,8 @@
 from itertools import combinations
 from typing import Iterator
 
-from card import Card, Joker
-from ranking import order_num
+from negro.card import Card, Joker
+from negro.ranking import order_num
 
 
 def possible_sets(hand: list[Card | Joker]) -> Iterator[list[Card | Joker]]:

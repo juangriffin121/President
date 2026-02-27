@@ -1,9 +1,7 @@
 import time
-from card import Card, Joker
-from state import GlobalState, PlayerState
-from strategy import Strategy
-from itertools import combinations
-from collections import defaultdict
+from negro.card import Card, Joker
+from negro.state import GlobalState, PlayerState
+from negro.strategy import Strategy
 
 SLEEP_ENABLED = True
 
