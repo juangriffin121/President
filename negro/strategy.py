@@ -168,7 +168,7 @@ class AgentStrategy(Strategy):
     def inform_of_results(self, performance: int, name: str):
         self.last_reward = performance
         if not self.agent.frozen:
-            writes.write("I'll be learning from this")
+            writes.write(f"{name}: I'll be learning from this")
             self.agent.update(performance)
 
         match performance:

@@ -26,7 +26,7 @@ def train(
     set_sleep_enabled(False)
 
     if agent is None:
-        agent = MLPAgent((5,))
+        agent = LinearAgent()  # MLPAgent((7, 3))
 
     agent_strategy = AgentStrategy(agent)
     p1 = Player("p1", Smallest())
@@ -43,7 +43,7 @@ def train(
             agent.temperature = max(0.1 * starting_temp, agent.temperature * 0.90)
             agent.dt = max(0.1 * starting_dt, agent.dt * 0.90)
 
-        t = Table([p1, p2, a])
+        t = Table([p1, p2, p3, p4, a])
         t.game()
         log.rewards.append(agent_strategy.last_reward or 0)
 
@@ -73,7 +73,7 @@ def test(
 
     log = TrainingLog()
     for game_idx in range(num_games):
-        t = Table([p1, p2, a])
+        t = Table([p1, p2, p3, p4, a])
         t.game()
         log.rewards.append(agent_strategy.last_reward or 0)
 
@@ -107,13 +107,8 @@ def plot_results(rewards: np.ndarray):
     plt.show()
 
 
-agent, log = train(3000)
-rewards = np.array(log.rewards, dtype=float)
-plot_results(rewards)
-
-log = test(1000, agent)
-
-rewards = np.array(log.rewards, dtype=float)
-avg_reward = np.average(rewards)
-plot_results(rewards)
-print(f"Average: {avg_reward}")
+if __name__ == "__main__":
+    agent, log = train(3000)
+    rewards = np.array(log.rewards, dtype=float)
+    plot_results(rewards)
+    agent.save("Linear")

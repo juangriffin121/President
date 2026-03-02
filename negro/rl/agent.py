@@ -13,8 +13,12 @@ class Agent(ABC):
         self.trajectory = []
         self.worst_chosen: list[Card | Joker] = []
         self.frozen = False
-        self.dt = 0.2  # 0.6 for linear
-        self.temperature = 2.0  # 3.0 for linear
+        self.dt = 0.1  # Redefined in subclasses
+        self.temperature = 1.0  # Redefined in subclasses
+        self.reward_count = 0
+        self.reward_mean = 0.0
+        self.reward_m2 = 0.0
+        self.adv_clip = 3.0
 
     def choose_cards(
         self, state: GlobalState, player_state
@@ -38,6 +42,10 @@ class Agent(ABC):
         if not self.frozen:
             pass
             # self.worst_chosen =
+
+    @abstractmethod
+    def save(self, path: str) -> None:
+        raise NotImplementedError
 
     @abstractmethod
     def update(self, reward: int) -> None:
@@ -78,6 +86,25 @@ class Agent(ABC):
 
     def unfreeze(self):
         self.frozen = False
+
+    def _normalize_reward(self, reward: float) -> float:
+        if self.reward_count < 2:
+            normalized = reward
+        else:
+            variance = self.reward_m2 / (self.reward_count - 1)
+            std = max(float(np.sqrt(variance)), 1e-6)
+            normalized = (reward - self.reward_mean) / std
+
+        normalized = float(np.clip(normalized, -self.adv_clip, self.adv_clip))
+        self._update_reward_stats(reward)
+        return normalized
+
+    def _update_reward_stats(self, reward: float) -> None:
+        self.reward_count += 1
+        delta = reward - self.reward_mean
+        self.reward_mean += delta / self.reward_count
+        delta2 = reward - self.reward_mean
+        self.reward_m2 += delta * delta2
 
     def get_features(
         self,
@@ -212,6 +239,8 @@ class LinearAgent(Agent):
     def __init__(self) -> None:
         super().__init__()
         self.weights: ndarray | None = None
+        self.dt = 0.6
+        self.temperature = 3.0
 
     def init_weights(self, num_features) -> None:
         if self.weights is None:
@@ -219,12 +248,13 @@ class LinearAgent(Agent):
 
     def update(self, reward: int) -> None:
         assert not self.frozen
+        advantage = self._normalize_reward(float(reward))
         for features, choice_idx, probs in self.trajectory:
-            self.update_weights(features, choice_idx, probs, reward)
+            self.update_weights(features, choice_idx, probs, advantage)
         self.trajectory = []
 
     def update_weights(
-        self, features: ndarray, choice_idx: int, probs: ndarray, reward: int
+        self, features: ndarray, choice_idx: int, probs: ndarray, reward: float
     ) -> None:
         assert self.weights is not None
         grad = softmax_grad(probs, self.temperature, choice_idx, reward)
@@ -237,10 +267,26 @@ class LinearAgent(Agent):
         scores = features @ self.weights
         return softmax(scores, self.temperature)
 
+    def save(self, path: str) -> None:
+        assert self.weights is not None
+        np.savez(
+            path,
+            version=np.array(1, dtype=int),
+            kind=np.array("linear"),
+            dt=np.array(self.dt, dtype=float),
+            temperature=np.array(self.temperature, dtype=float),
+            frozen=np.array(int(self.frozen), dtype=int),
+            weights=self.weights,
+        )
+
 
 class MLPAgent(Agent):
     def __init__(self, hidden_layers_sizes: tuple[int, ...]) -> None:
         super().__init__()
+
+        self.dt = 0.2
+        self.temperature = 2.0
+
         self.hidden_layers_sizes = hidden_layers_sizes
         self.weights: list[ndarray] | None = None
         self.biases: list[ndarray] | None = None
@@ -260,10 +306,11 @@ class MLPAgent(Agent):
 
     def update(self, reward: int) -> None:
         assert not self.frozen
+        advantage = self._normalize_reward(float(reward))
         for (_, choice_idx, probs), (x_cache, y_cache) in zip(
             self.trajectory, self.neuron_log
         ):
-            self.update_weights(choice_idx, probs, reward, x_cache, y_cache)
+            self.update_weights(choice_idx, probs, advantage, x_cache, y_cache)
         self.trajectory = []
         self.neuron_log = []
 
@@ -271,7 +318,7 @@ class MLPAgent(Agent):
         self,
         choice_idx: int,
         probs: ndarray,
-        reward: int,
+        reward: float,
         x_cache: list[ndarray],
         y_cache: list[ndarray],
     ) -> None:
@@ -321,6 +368,88 @@ class MLPAgent(Agent):
 
         return softmax(x, self.temperature)
 
+    def save(self, path: str) -> None:
+        assert self.weights is not None
+        assert self.biases is not None
+        payload: dict[str, ndarray] = {
+            "version": np.array(1, dtype=int),
+            "kind": np.array("mlp"),
+            "dt": np.array(self.dt, dtype=float),
+            "temperature": np.array(self.temperature, dtype=float),
+            "frozen": np.array(int(self.frozen), dtype=int),
+            "hidden_layers_sizes": np.array(self.hidden_layers_sizes, dtype=int),
+            "num_layers": np.array(len(self.weights), dtype=int),
+        }
+        for idx, w in enumerate(self.weights):
+            payload[f"w{idx}"] = w
+        for idx, b in enumerate(self.biases):
+            payload[f"b{idx}"] = b
+        np.savez(path, **payload)
+
+
+def load_agent(path: str) -> Agent:
+    checkpoint = np.load(path, allow_pickle=False)
+    kind = str(checkpoint["kind"])
+    if kind == "linear":
+        agent = LinearAgent()
+        agent.weights = checkpoint["weights"]
+    elif kind == "mlp":
+        hidden_layers = tuple(
+            int(x) for x in checkpoint["hidden_layers_sizes"].tolist()
+        )
+        agent = MLPAgent(hidden_layers)
+        num_layers = int(checkpoint["num_layers"])
+        agent.weights = [checkpoint[f"w{i}"] for i in range(num_layers)]
+        agent.biases = [checkpoint[f"b{i}"] for i in range(num_layers)]
+    else:
+        raise ValueError(f"Unknown agent kind in checkpoint: {kind}")
+
+    agent.dt = float(checkpoint["dt"])
+    agent.temperature = float(checkpoint["temperature"])
+    agent.frozen = bool(int(checkpoint["frozen"]))
+    agent.trajectory = []
+    agent.worst_chosen = []
+    if isinstance(agent, MLPAgent):
+        agent.neuron_log = []
+    return agent
+
+
+def clone_agent(agent: Agent, perturb_std: float = 0.0) -> Agent:
+    if isinstance(agent, LinearAgent):
+        clone = LinearAgent()
+        assert agent.weights is not None
+        clone.weights = agent.weights.copy()
+        if perturb_std > 0:
+            clone.weights += np.random.normal(0.0, perturb_std, size=clone.weights.shape)
+    elif isinstance(agent, MLPAgent):
+        clone = MLPAgent(agent.hidden_layers_sizes)
+        assert agent.weights is not None
+        assert agent.biases is not None
+        clone.weights = [w.copy() for w in agent.weights]
+        clone.biases = [b.copy() for b in agent.biases]
+        if perturb_std > 0:
+            clone.weights = [
+                w + np.random.normal(0.0, perturb_std, size=w.shape)
+                for w in clone.weights
+            ]
+            clone.biases = [
+                b + np.random.normal(0.0, perturb_std, size=b.shape)
+                for b in clone.biases
+            ]
+    else:
+        raise ValueError(f"Unsupported agent type for cloning: {type(agent).__name__}")
+
+    clone.dt = agent.dt
+    clone.temperature = agent.temperature
+    clone.frozen = agent.frozen
+    clone.reward_count = agent.reward_count
+    clone.reward_mean = agent.reward_mean
+    clone.reward_m2 = agent.reward_m2
+    clone.adv_clip = agent.adv_clip
+    clone.trajectory = []
+    clone.worst_chosen = []
+    return clone
+
 
 def leaky_relu(x: ndarray) -> ndarray:
     return np.where(x > 0, x, 0.1 * x)
@@ -340,7 +469,7 @@ def softmax(x: ndarray, temp: float) -> ndarray:
     return exp_x / total
 
 
-def softmax_grad(y: ndarray, temp: float, choice_idx: int, reward: int) -> ndarray:
+def softmax_grad(y: ndarray, temp: float, choice_idx: int, reward: float) -> ndarray:
     one_hot = np.zeros(y.shape[0])
     one_hot[choice_idx] = 1
     return reward * (one_hot - y) / max(temp, 1e-6)
