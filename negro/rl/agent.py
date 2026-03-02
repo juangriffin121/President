@@ -15,10 +15,6 @@ class Agent(ABC):
         self.frozen = False
         self.dt = 0.1  # Redefined in subclasses
         self.temperature = 1.0  # Redefined in subclasses
-        self.reward_count = 0
-        self.reward_mean = 0.0
-        self.reward_m2 = 0.0
-        self.adv_clip = 3.0
 
     def choose_cards(
         self, state: GlobalState, player_state
@@ -86,25 +82,6 @@ class Agent(ABC):
 
     def unfreeze(self):
         self.frozen = False
-
-    def _normalize_reward(self, reward: float) -> float:
-        if self.reward_count < 2:
-            normalized = reward
-        else:
-            variance = self.reward_m2 / (self.reward_count - 1)
-            std = max(float(np.sqrt(variance)), 1e-6)
-            normalized = (reward - self.reward_mean) / std
-
-        normalized = float(np.clip(normalized, -self.adv_clip, self.adv_clip))
-        self._update_reward_stats(reward)
-        return normalized
-
-    def _update_reward_stats(self, reward: float) -> None:
-        self.reward_count += 1
-        delta = reward - self.reward_mean
-        self.reward_mean += delta / self.reward_count
-        delta2 = reward - self.reward_mean
-        self.reward_m2 += delta * delta2
 
     def get_features(
         self,
@@ -248,9 +225,8 @@ class LinearAgent(Agent):
 
     def update(self, reward: int) -> None:
         assert not self.frozen
-        advantage = self._normalize_reward(float(reward))
         for features, choice_idx, probs in self.trajectory:
-            self.update_weights(features, choice_idx, probs, advantage)
+            self.update_weights(features, choice_idx, probs, reward)
         self.trajectory = []
 
     def update_weights(
@@ -306,11 +282,10 @@ class MLPAgent(Agent):
 
     def update(self, reward: int) -> None:
         assert not self.frozen
-        advantage = self._normalize_reward(float(reward))
         for (_, choice_idx, probs), (x_cache, y_cache) in zip(
             self.trajectory, self.neuron_log
         ):
-            self.update_weights(choice_idx, probs, advantage, x_cache, y_cache)
+            self.update_weights(choice_idx, probs, reward, x_cache, y_cache)
         self.trajectory = []
         self.neuron_log = []
 
@@ -420,7 +395,9 @@ def clone_agent(agent: Agent, perturb_std: float = 0.0) -> Agent:
         assert agent.weights is not None
         clone.weights = agent.weights.copy()
         if perturb_std > 0:
-            clone.weights += np.random.normal(0.0, perturb_std, size=clone.weights.shape)
+            clone.weights += np.random.normal(
+                0.0, perturb_std, size=clone.weights.shape
+            )
     elif isinstance(agent, MLPAgent):
         clone = MLPAgent(agent.hidden_layers_sizes)
         assert agent.weights is not None
@@ -442,10 +419,6 @@ def clone_agent(agent: Agent, perturb_std: float = 0.0) -> Agent:
     clone.dt = agent.dt
     clone.temperature = agent.temperature
     clone.frozen = agent.frozen
-    clone.reward_count = agent.reward_count
-    clone.reward_mean = agent.reward_mean
-    clone.reward_m2 = agent.reward_m2
-    clone.adv_clip = agent.adv_clip
     clone.trajectory = []
     clone.worst_chosen = []
     return clone

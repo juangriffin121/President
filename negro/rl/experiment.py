@@ -440,7 +440,7 @@ def _checkpoint_label(games_trained: int) -> str:
 if __name__ == "__main__":
     # One-family smoke test config (edit as needed before running).
     families: dict[str, Callable[[], Agent]] = {
-        # "Linear": lambda: LinearAgent(),
+        "Linear": lambda: LinearAgent(),
         "MLP5": lambda: MLPAgent((5,)),
         "MLP7-3": lambda: MLPAgent((7, 3)),
         "MLP20": lambda: MLPAgent((20,)),
