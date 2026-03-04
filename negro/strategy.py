@@ -5,6 +5,7 @@ from negro.rl.agent import Agent
 from negro.ui import reads, writes
 from negro.ranking import get_num, order_num, sort_hand
 from negro.utils import possible_sets
+from negro.rl.hand_strength import HandStrengthPredictor
 
 
 class Strategy(ABC):
@@ -21,6 +22,9 @@ class Strategy(ABC):
 
     @abstractmethod
     def inform_of_results(self, performance: int, name: str):
+        pass
+
+    def on_deal(self, hand: list[Card | Joker], total_players: int) -> None:
         pass
 
 
@@ -153,9 +157,15 @@ class UserStrategy(Strategy):
 
 
 class AgentStrategy(Strategy):
-    def __init__(self, agent: Agent) -> None:
+    def __init__(
+        self,
+        agent: Agent,
+        hand_strength_predictor: HandStrengthPredictor | None = None,
+    ) -> None:
         self.agent = agent
         self.last_reward: int | None = None
+        self.hand_strength_predictor = hand_strength_predictor
+        self.last_hand_strength_prediction: float | None = None
 
     def choose_cards(
         self, global_state: GlobalState, player_state: PlayerState
@@ -165,8 +175,16 @@ class AgentStrategy(Strategy):
     def choose_worst(self, count, hand) -> list[Card | Joker]:
         return super().choose_worst(count, hand)
 
+    def on_deal(self, hand: list[Card | Joker], total_players: int) -> None:
+        if self.hand_strength_predictor is not None:
+            self.hand_strength_predictor.observe_hand(hand, total_players)
+
     def inform_of_results(self, performance: int, name: str):
         self.last_reward = performance
+        if self.hand_strength_predictor is not None:
+            self.last_hand_strength_prediction = self.hand_strength_predictor.update(
+                performance
+            )
         if not self.agent.frozen:
             writes.write(f"{name}: I'll be learning from this")
             self.agent.update(performance)

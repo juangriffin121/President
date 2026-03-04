@@ -32,6 +32,7 @@ class Table:
         while len(cards) > 0:
             card = cards.pop()
             self.players[i].hand.append(card)
+            self.players[i].on_deal(self.total_players)
             i = (i + 1) % self.num_players()
 
     def round(self, starting_player_idx: int):
