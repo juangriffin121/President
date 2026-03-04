@@ -75,6 +75,7 @@ class Table:
                 last_played = None
             if played is not None:
                 assert valid_choice(played, last_played)
+                self.played.append(played)
                 if len(player.hand) == 0:
                     winner = self.players.pop(i)
                     writes.announce_player_finished(i)
@@ -91,7 +92,6 @@ class Table:
                     self.played = []
                     return i % self.num_players()
 
-                self.played.append(played)
                 last_played_idx = i
             i = (i + 1) % self.num_players()
         winner_idx = i
