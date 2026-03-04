@@ -2,9 +2,9 @@ import random
 
 import numpy as np
 
-from negro.player import Player
-from negro.strategy import Smallest
-from negro.table import Table
+from president.player import Player
+from president.strategy import Smallest
+from president.table import Table
 
 
 def _run_one_game(num_players: int, seed: int) -> Table:

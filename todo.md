@@ -7,7 +7,7 @@
 
       - Table.game() already calls exchange in table.py, so the feature is wired.
       - Real gap: AgentStrategy.choose_worst() delegates to abstract base and returns None in strategy.py, which can fail assert choice is not None in exchange flow.
-      - Implement choose_worst for AgentStrategy (or agent class), and add tests for presidente/negro exchange across multiple games.
+      - Implement choose_worst for AgentStrategy (or agent class), and add tests for president/scum exchange across multiple games.
 
   2. P0 Add tests for core rules/game progression
      Importance: Critical

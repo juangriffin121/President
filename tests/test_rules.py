@@ -1,5 +1,5 @@
-from negro.card import Card, Joker
-from negro.rules import all_cards_same, valid_choice
+from president.card import Card, Joker
+from president.rules import all_cards_same, valid_choice
 
 
 def test_all_cards_same_allows_jokers() -> None:

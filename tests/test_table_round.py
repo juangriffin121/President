@@ -1,8 +1,8 @@
-from negro.card import Card
-from negro.player import Player
-from negro.state import GlobalState, PlayerState
-from negro.strategy import Strategy
-from negro.table import Table
+from president.card import Card
+from president.player import Player
+from president.state import GlobalState, PlayerState
+from president.strategy import Strategy
+from president.table import Table
 
 
 class OpenThenPass(Strategy):

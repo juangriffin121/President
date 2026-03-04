@@ -1,8 +1,8 @@
 import numpy as np
 
-from negro.rl.agent import LinearAgent
-from negro.rl.train import test as eval_test
-from negro.rl.train import train
+from president.rl.agent import LinearAgent
+from president.rl.train import test as eval_test
+from president.rl.train import train
 
 
 def test_train_returns_logs_with_expected_lengths() -> None:

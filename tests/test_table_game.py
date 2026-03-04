@@ -1,6 +1,6 @@
-from negro.player import Player
-from negro.strategy import Smallest
-from negro.table import Table
+from president.player import Player
+from president.strategy import Smallest
+from president.table import Table
 
 
 def test_table_game_terminates_and_collects_all_cards() -> None:

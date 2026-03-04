@@ -1,5 +1,5 @@
-from negro.card import Card, Joker
-from negro.utils import possible_sets
+from president.card import Card, Joker
+from president.utils import possible_sets
 
 
 def test_possible_sets_include_expected_joker_combinations() -> None:

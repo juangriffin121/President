@@ -1,5 +1,5 @@
-from negro.card import Card, Joker
-from negro.ranking import get_num, order_num, rank_card, sort_hand
+from president.card import Card, Joker
+from president.ranking import get_num, order_num, rank_card, sort_hand
 
 
 def test_order_num_treats_ace_as_highest() -> None:

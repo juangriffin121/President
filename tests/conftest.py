@@ -3,8 +3,8 @@ import random
 import numpy as np
 import pytest
 
-from negro.player import set_sleep_enabled
-from negro.ui import writes
+from president.player import set_sleep_enabled
+from president.ui import writes
 
 
 @pytest.fixture(autouse=True)
