@@ -7,6 +7,8 @@ Python implementation of the card game **President** with:
 - Reinforcement learning agents implemented in NumPy (linear + MLP)
 - Training and experiment scripts
 
+Game reference: [President (card game) on Wikipedia](https://en.wikipedia.org/wiki/President_(card_game)).
+
 ## Requirements
 
 - Python `3.11+`
