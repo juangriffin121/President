@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
-from numpy import ndarray
+from numpy import ndarray, number
 import numpy as np
 from president.card import Card, Joker
-from president.rl.features import get_features
+from president.rl.features import Features, get_features
 from president.state import GlobalState, PlayerState
 from president.rules import valid_choice
 from president.utils import possible_sets
@@ -11,7 +11,7 @@ from president.ranking import get_num, order_num
 
 class Agent(ABC):
     def __init__(self) -> None:
-        self.trajectory = []
+        self.trajectory: list[tuple[Features, int, ndarray]] = []
         self.worst_chosen: list[Card | Joker] = []
         self.frozen = False
         self.dt = 0.1  # Redefined in subclasses
@@ -23,7 +23,7 @@ class Agent(ABC):
         last_played = state.played[-1] if state.played else None
         valid_actions = self.get_valid_actions(last_played, player_state.hand)
         features = get_features(state, player_state, valid_actions)
-        self.init_weights(features.shape[1])
+        self.init_weights(features)
         probs = self.get_probabilities(features)
         choice_idx, choice = self.choose(valid_actions, probs)
         if not self.frozen:
@@ -31,7 +31,7 @@ class Agent(ABC):
         return choice
 
     @abstractmethod
-    def init_weights(self, num_features) -> None:
+    def init_weights(self, features: Features) -> None:
         raise NotImplementedError
 
     def choose_worst(self, count, hand):
@@ -49,14 +49,13 @@ class Agent(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_probabilities(self, features: ndarray) -> ndarray:
+    def get_probabilities(self, features: Features) -> ndarray:
         raise NotImplementedError
 
     def choose(
         self, actions: list[list[Card | Joker] | None], probs: ndarray
-    ) -> tuple[int | None, list[Card | Joker] | None]:
-        if len(actions) == 0:
-            return (None, None)
+    ) -> tuple[int, list[Card | Joker] | None]:
+        assert len(actions) >= 1
         if len(actions) == 1:
             return (0, actions[0])
         assert probs.size == len((actions))
@@ -92,8 +91,9 @@ class LinearAgent(Agent):
         self.dt = 0.6
         self.temperature = 3.0
 
-    def init_weights(self, num_features) -> None:
+    def init_weights(self, features: Features) -> None:
         if self.weights is None:
+            num_features = features.state_hand.size + features.actions.shape[1]
             self.weights = np.random.normal(0.0, 4, size=num_features)
 
     def update(self, reward: int) -> None:
@@ -103,17 +103,19 @@ class LinearAgent(Agent):
         self.trajectory = []
 
     def update_weights(
-        self, features: ndarray, choice_idx: int, probs: ndarray, reward: float
+        self, features: Features, choice_idx: int, probs: ndarray, reward: float
     ) -> None:
         assert self.weights is not None
+        flat_features = features.as_concatenated()
         grad = softmax_grad(probs, self.temperature, choice_idx, reward)
-        self.weights += self.dt * grad @ features
+        self.weights += self.dt * grad @ flat_features
 
-    def get_probabilities(self, features: ndarray) -> ndarray:
+    def get_probabilities(self, features: Features) -> ndarray:
+        flat_features = features.as_concatenated()
         assert self.weights is not None
-        if features.size == 0:  # No possible actions
-            return np.zeros(features.shape[0], dtype=float)
-        scores = features @ self.weights
+        if flat_features.size == 0:  # No possible actions
+            return np.zeros(flat_features.shape[0], dtype=float)
+        scores = flat_features @ self.weights
         return softmax(scores, self.temperature)
 
     def save(self, path: str) -> None:
@@ -141,9 +143,10 @@ class MLPAgent(Agent):
         self.biases: list[ndarray] | None = None
         self.neuron_log: list[tuple[list[ndarray], list[ndarray]]] = []
 
-    def init_weights(self, num_features) -> None:
+    def init_weights(self, features: Features) -> None:
         if self.weights is None:
             # layers_shape contains hidden layer sizes only.
+            num_features = features.state_hand.size + features.actions.shape[1]
             layer_sizes = (num_features, *self.hidden_layers_sizes, 1)
             self.weights = []
             self.biases = []
@@ -173,30 +176,33 @@ class MLPAgent(Agent):
         assert self.weights is not None
         assert self.biases is not None
 
-        dy = softmax_grad(probs, self.temperature, choice_idx, reward)[:, None]
+        dR_dy = softmax_grad(probs, self.temperature, choice_idx, reward)[:, None]
 
         for i in reversed(range(len(self.weights))):
             w = self.weights[i]
             x = x_cache[i]
 
-            dW = x.T @ dy
-            db = dy.sum(axis=0)  # b is shape (1,)
+            dR_dW = (
+                x.T @ dR_dy
+            )  # y = x @ W -> dR_dW = dR_dy @ dy_dW, dy_dW = x: (A, Fs) dR_dy: (A, )
+            dR_db = dR_dy.sum(axis=0)  # b is shape (1,) dR_dy is shape (A, )
 
             if i > 0:
-                dX = dy @ w.T
+                dR_dX = dR_dy @ w.T
                 y = y_cache[i - 1]
-                dy = dX * leaky_relu_grad(y)
+                dR_dy = dR_dX * leaky_relu_grad(y)
 
-            self.weights[i] += self.dt * dW
-            self.biases[i] += self.dt * db
+            self.weights[i] += self.dt * dR_dW
+            self.biases[i] += self.dt * dR_db
 
-    def get_probabilities(self, features: ndarray) -> ndarray:
+    def get_probabilities(self, features: Features) -> ndarray:
         assert self.weights is not None
         assert self.biases is not None
-        if features.size == 0:  # No possible actions
-            return np.zeros(features.shape[0], dtype=float)
+        flat_features = features.as_concatenated()
+        if flat_features.size == 0:  # No possible actions
+            return np.zeros(flat_features.shape[0], dtype=float)
 
-        x = features  # shape is (A, F)
+        x = flat_features  # shape is (A, F)
         last_idx = len(self.weights) - 1
         x_cache = []
         y_cache = []
@@ -235,6 +241,125 @@ class MLPAgent(Agent):
         np.savez(path, **payload)
 
 
+class AttentionAgent(Agent):
+    def __init__(self, latent_size: int = 10) -> None:
+        super().__init__()
+        self.ws: ndarray | None = None
+        self.bs: ndarray | None = None
+        self.wa: ndarray | None = None
+        self.ba: ndarray | None = None
+        self.latent_size = latent_size
+
+        self.dt = .1
+        self.temperature = 1.0
+
+    def init_weights(self, features: Features) -> None:
+        if self.ws is None:
+            Fs = features.state_hand.size
+            self.ws = np.random.normal(0.0, 1, size=(Fs, self.latent_size))  # (Fs, L)
+            self.bs = np.random.normal(0.0, 1, size=(self.latent_size, 1))  # (L, 1)
+            Fa = features.actions.shape[1]
+            self.wa = np.random.normal(0.0, 1, size=(Fa, self.latent_size))  # (Fa, L)
+            self.ba = np.random.normal(0.0, 1, size=(1, self.latent_size))  # (1, L)
+            # (1, L) is better for broadcast with (A, L) action latents
+
+    def update(self, reward: int) -> None:
+        assert not self.frozen
+        for features, choice_idx, probs in self.trajectory:
+            self.update_weights(features, choice_idx, probs, reward)
+        self.trajectory = []
+
+    def update_weights(
+        self,
+        features: Features,
+        choice_idx: int,
+        probs: ndarray,
+        reward: float,
+    ) -> None:
+        assert self.ws is not None
+        assert self.wa is not None
+        assert self.bs is not None
+        assert self.ba is not None
+
+        dR_dy = softmax_grad(probs, self.temperature, choice_idx, reward)[
+            :, None
+        ]  # (A, ) -> (A, 1)
+        xs = features.state_hand[:, None]  # (Fs, ) -> (Fs, 1)
+        xa = features.actions  # (A, Fa)
+
+        # y = la @ ls shapes: (A, ) = (A, L) @ (L, )
+        # ls = self.ws @ xs + self.bs  shape would be (Fs, L) @ (Fs, 1) + (L, 1) but i need shape (L, Fs) @ (Fs, 1) + (L, 1) = (L, 1)
+        ls = self.ws.T @ xs + self.bs  # (L, 1)
+        la = xa @ self.wa + self.ba  # (A, Fa) @ (Fa, L) + (1, L) = (A, L)
+
+        # dR_dy (A, 1)
+        # dy_dla = ls (L, 1)
+        # dR_dla (A, L) = dR_dy @ dy_dla = dR_dy @ ls shape would be (A, 1) @ (L, 1) but need (A, 1) @ (1, L)
+        dR_dla = dR_dy @ ls.T
+
+        # dR_dy (A, 1)
+        # dy_dls = la (A, L)
+        # dR_dls (L, 1) = dR_dy @ dy_dls = dR_dy @ la shape would be (A, 1) @ (A, L) but need (L, A) @ (A, 1)
+        dR_dls = la.T @ dR_dy  # (L, 1)
+
+        # dls_dws = xs
+        # dR_dws (Fs, L) = dR_dls @ dls_dws = dR_dls @ xs shape would be (L, 1) @ (Fs, 1) need (Fs, 1) @ (1, L)
+        dR_dws = xs @ dR_dls.T
+
+        # dls_dbs = 1
+        # dR_dbs (L, 1) = dR_dls @ dls_dws = dR_dls @ 1 shape would be (L, 1) @ 1 need (L, 1)
+        dR_dbs = dR_dls
+
+        # dla_dwa = xa
+        # dR_dwa (Fa, L) = dR_dla @ dla_dwa = dR_dla @ xa shape would be (A, L) @ (A, Fa) need (Fa, A) @ (A, L)
+        dR_dwa = xa.T @ dR_dla
+
+        # dla_dba = 1
+        # dR_dbb (1, L) = dR_dla @ dla_dba = dR_dla @ 1 shape would be (A, L) @ 1 need (L, 1) so (A, L).sum(axis = 0)
+        dR_dba = dR_dla.sum(axis=0, keepdims=True)
+
+        dt = self.dt
+        self.ws += dR_dws * dt
+        self.wa += dR_dwa * dt
+        self.bs += dR_dbs * dt
+        self.ba += dR_dba * dt
+
+    def get_probabilities(self, features: Features) -> ndarray:
+        assert self.ws is not None
+        assert self.wa is not None
+        assert self.bs is not None
+        assert self.ba is not None
+
+        xs = features.state_hand[:, None]  # (Fs, ) -> (Fs, 1)
+        xa = features.actions  # (A, Fa)
+
+        ls = self.ws.T @ xs + self.bs  # (L, 1)
+        la = xa @ self.wa + self.ba  # (A, Fa) @ (Fa, L) = (A, L)
+        y = la @ ls
+        y = y[:, 0]  # (A, 1) -> (A, )
+
+        return softmax(y, self.temperature)  # (A, L) @ (L, 1) = (A, )
+
+    def save(self, path: str) -> None:
+        assert self.ws is not None
+        assert self.bs is not None
+        assert self.wa is not None
+        assert self.ba is not None
+        np.savez(
+            path,
+            version=np.array(1, dtype=int),
+            kind=np.array("attention"),
+            dt=np.array(self.dt, dtype=float),
+            temperature=np.array(self.temperature, dtype=float),
+            frozen=np.array(int(self.frozen), dtype=int),
+            latent_size=np.array(self.latent_size, dtype=int),
+            ws=self.ws,
+            bs=self.bs,
+            wa=self.wa,
+            ba=self.ba,
+        )
+
+
 def load_agent(path: str) -> Agent:
     checkpoint = np.load(path, allow_pickle=False)
     kind = str(checkpoint["kind"])
@@ -249,6 +374,18 @@ def load_agent(path: str) -> Agent:
         num_layers = int(checkpoint["num_layers"])
         agent.weights = [checkpoint[f"w{i}"] for i in range(num_layers)]
         agent.biases = [checkpoint[f"b{i}"] for i in range(num_layers)]
+    elif kind == "attention":
+        latent_size = int(
+            checkpoint["latent_size"]
+            if "latent_size" in checkpoint
+            else checkpoint["ws"].shape[1]
+        )
+        agent = AttentionAgent()
+        agent.latent_size = latent_size
+        agent.ws = checkpoint["ws"]
+        agent.bs = checkpoint["bs"]
+        agent.wa = checkpoint["wa"]
+        agent.ba = checkpoint["ba"]
     else:
         raise ValueError(f"Unknown agent kind in checkpoint: {kind}")
 
@@ -286,6 +423,22 @@ def clone_agent(agent: Agent, perturb_std: float = 0.0) -> Agent:
                 b + np.random.normal(0.0, perturb_std, size=b.shape)
                 for b in clone.biases
             ]
+    elif isinstance(agent, AttentionAgent):
+        clone = AttentionAgent()
+        assert agent.ws is not None
+        assert agent.bs is not None
+        assert agent.wa is not None
+        assert agent.ba is not None
+        clone.latent_size = agent.latent_size
+        clone.ws = agent.ws.copy()
+        clone.bs = agent.bs.copy()
+        clone.wa = agent.wa.copy()
+        clone.ba = agent.ba.copy()
+        if perturb_std > 0:
+            clone.ws += np.random.normal(0.0, perturb_std, size=clone.ws.shape)
+            clone.bs += np.random.normal(0.0, perturb_std, size=clone.bs.shape)
+            clone.wa += np.random.normal(0.0, perturb_std, size=clone.wa.shape)
+            clone.ba += np.random.normal(0.0, perturb_std, size=clone.ba.shape)
     else:
         raise ValueError(f"Unsupported agent type for cloning: {type(agent).__name__}")
 

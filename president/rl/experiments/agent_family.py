@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from president.player import Player, set_sleep_enabled
-from president.rl.agent import Agent, LinearAgent, MLPAgent, clone_agent
+from president.rl.agent import Agent, AttentionAgent, LinearAgent, MLPAgent, clone_agent
 from president.strategy import AgentStrategy, Smallest
 from president.table import Table
 from president.ui import writes
@@ -441,9 +441,9 @@ if __name__ == "__main__":
     # One-family smoke test config (edit as needed before running).
     families: dict[str, Callable[[], Agent]] = {
         "Linear": lambda: LinearAgent(),
-        "MLP5": lambda: MLPAgent((5,)),
-        "MLP7-3": lambda: MLPAgent((7, 3)),
+        # "MLP7-3": lambda: MLPAgent((7, 3)),
         "MLP20": lambda: MLPAgent((20,)),
+        "AA10": lambda: AttentionAgent(5),
     }
 
     config = ExperimentConfig(

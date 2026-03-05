@@ -5,7 +5,7 @@ Python implementation of the card game **President** with:
 - Core game engine (deck, rules, rounds, role exchange)
 - Multiple strategies (human input, heuristic bots, RL agent strategy)
 - Reinforcement learning agents implemented in NumPy (linear + MLP)
-- Training and experiment scripts
+- Training scripts and optimization experiments
 
 Game reference: [President (card game) on Wikipedia](https://en.wikipedia.org/wiki/President_(card_game)).
 
@@ -91,3 +91,49 @@ tests/               # Pytest suite
 - The game uses terminal input/output for interactive play.
 - Pretrained `.npz` checkpoints in the repo root can be loaded by RL scripts.
 - If imports fail, prefer running through Poetry from the repository root (commands above).
+
+
+
+## specifics
+
+
+  For refactor brainstorming (no code changes), I’d use experiments/agent_family.py as the canonical base and split like this:
+
+  Shared reusable core
+
+  - play_one_game(agent, num_opponents, seed, hand_strength_predictor=None) -> game_result
+  - evaluate_agent(agent, seeds, num_opponents) -> np.ndarray
+  - anneal(agent, initial_dt, initial_temp, game_idx, config) -> None
+  - set_reproducible_seed(seed) -> None
+  - common TrainingLog/EvalLog dataclasses
+  - optional callback hooks: on_game_end, on_checkpoint_end
+
+  Belongs to train.py (single-agent workflow)
+
+  - default agent creation
+  - simple loop over num_games
+  - optional annealing schedule
+  - optional hand-strength predictor updates/logging
+  - lightweight plotting/CLI behavior for quick iteration
+
+  Belongs to test.py (evaluation-only workflow)
+
+  - load checkpoint
+  - freeze agent
+  - run fixed number of eval games
+  - report summary stats (mean reward, maybe std/quantiles)
+
+  Belongs to experiments/agent_family.py (population workflow)
+
+  - multiple agents in parallel
+  - checkpoint cadence
+  - best-agent selection on eval seeds
+  - replacement/cloning of weak agents
+  - artifact management (save checkpoints + experiment plots)
+
+  A clean boundary is:
+
+  - core module has zero knowledge of “families/checkpoints/replacement”
+  - experiment module composes core primitives to implement those policies
+
+  If you want, next step I can draft a concrete target module layout and function signatures only (no edits yet), so we can agree before refactoring.

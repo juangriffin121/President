@@ -1,8 +1,22 @@
+from dataclasses import dataclass
 import numpy as np
 
 from president.card import Card, Joker
 from president.ranking import get_num, order_num
 from president.state import GlobalState, PlayerState
+
+
+@dataclass
+class Features:
+    state_hand: np.ndarray  # shape (F_s,)
+    actions: np.ndarray  # shape (A, F_a)
+
+    def as_concatenated(self) -> np.ndarray:
+        # for old agents
+        if self.actions.shape[0] == 0:
+            return np.zeros((0, self.state_hand.shape[0] + self.actions.shape[1]))
+        s = np.repeat(self.state_hand[None, :], self.actions.shape[0], axis=0)
+        return np.concatenate([s, self.actions], axis=1)
 
 
 def get_hand_features(hand: list[Card | Joker], total_players: int) -> list[float]:
@@ -143,7 +157,7 @@ def get_features(
     state: GlobalState,
     player_state: PlayerState,
     valid_actions: list[list[Card | Joker] | None],
-) -> np.ndarray:
+) -> Features:
     hand = player_state.hand
     hand_count = len(player_state.hand)
     last_play = state.played[-1] if state.played else None
@@ -152,12 +166,13 @@ def get_features(
     hand_features = get_hand_features(hand, state.total_players)
     state_features = get_state_features(state, player_state.id, hand_count)
 
-    feature_rows = []
+    action_feature_rows = []
     for action in valid_actions:
-        feature_rows.append(
-            hand_features
-            + state_features
-            + get_action_features(action, hand_count, last_play, last_play_rank)
+        action_feature_rows.append(
+            get_action_features(action, hand_count, last_play, last_play_rank)
         )
 
-    return np.array(feature_rows, dtype=float)
+    return Features(
+        np.array(hand_features + state_features, dtype=float),
+        np.array(action_feature_rows, dtype=float),
+    )

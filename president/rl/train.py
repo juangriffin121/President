@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from president.player import Player, set_sleep_enabled
-from president.rl.agent import Agent, LinearAgent, MLPAgent
+from president.rl.agent import Agent, AttentionAgent, LinearAgent, MLPAgent
 from president.rl.hand_strength import HandStrengthPredictor
 from president.strategy import AgentStrategy, Smallest
 from president.table import Table
@@ -152,7 +152,8 @@ def plot_results(
 
 
 if __name__ == "__main__":
-    strategy, log = train(3000)
+    agent = AttentionAgent(5)
+    strategy, log = train(1000, agent)
     agent = strategy.agent
 
     rewards = np.array(log.rewards, dtype=float)
