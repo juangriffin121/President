@@ -15,6 +15,7 @@ class GlobalState:
     vice_president: int | None
     vice_scum: int | None
     scum: int | None
+    last_played_by: int | None = None
 
 
 @dataclass

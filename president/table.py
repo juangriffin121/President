@@ -40,6 +40,7 @@ class Table:
         last_played_idx = (
             i - 1
         ) % self.num_players()  # could be None but if everyone passes it can be infinite loop, this way if even first player
+        last_played_player_id = self.players[last_played_idx].id
         # passes and everyone passes after, the player before the first wins the round and gets to play first, not that any of this would happen
         while True:
             if i == last_played_idx:
@@ -64,6 +65,7 @@ class Table:
                 ),
                 vice_scum=self.vice_scum.id if self.vice_scum else None,
                 scum=self.scum.id if self.scum else None,
+                last_played_by=last_played_player_id,
             )
 
             played = player.choose_cards(global_state)
@@ -93,6 +95,7 @@ class Table:
                     return i % self.num_players()
 
                 last_played_idx = i
+                last_played_player_id = player.id
             i = (i + 1) % self.num_players()
         winner_idx = i
         return winner_idx

@@ -152,8 +152,8 @@ def plot_results(
 
 
 if __name__ == "__main__":
-    agent = AttentionAgent(5)
-    strategy, log = train(1000, agent)
+    agent = AttentionAgent(10)
+    strategy, log = train(2000, agent)
     agent = strategy.agent
 
     rewards = np.array(log.rewards, dtype=float)
