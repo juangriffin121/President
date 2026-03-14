@@ -16,6 +16,8 @@ class Agent(ABC):
         self.frozen = False
         self.dt = 0.1  # Redefined in subclasses
         self.temperature = 1.0  # Redefined in subclasses
+        self.baseline = 0.0
+        self.baseline_lr = 0.05
 
     def choose_cards(
         self, state: GlobalState, player_state
@@ -97,9 +99,11 @@ class LinearAgent(Agent):
             self.weights = np.random.normal(0.0, 4, size=num_features)
 
     def update(self, reward: int) -> None:
+        advantage = reward - self.baseline
+        self.baseline += self.baseline_lr * (reward - self.baseline)
         assert not self.frozen
         for features, choice_idx, probs in self.trajectory:
-            self.update_weights(features, choice_idx, probs, reward)
+            self.update_weights(features, choice_idx, probs, advantage)
         self.trajectory = []
 
     def update_weights(
@@ -135,8 +139,8 @@ class MLPAgent(Agent):
     def __init__(self, hidden_layers_sizes: tuple[int, ...]) -> None:
         super().__init__()
 
-        self.dt = 0.2
-        self.temperature = 2.0
+        self.dt = 0.1
+        self.temperature = 1.0
 
         self.hidden_layers_sizes = hidden_layers_sizes
         self.weights: list[ndarray] | None = None
@@ -158,10 +162,12 @@ class MLPAgent(Agent):
 
     def update(self, reward: int) -> None:
         assert not self.frozen
+        advantage = reward - self.baseline
+        self.baseline += self.baseline_lr * (reward - self.baseline)
         for (_, choice_idx, probs), (x_cache, y_cache) in zip(
             self.trajectory, self.neuron_log
         ):
-            self.update_weights(choice_idx, probs, reward, x_cache, y_cache)
+            self.update_weights(choice_idx, probs, advantage, x_cache, y_cache)
         self.trajectory = []
         self.neuron_log = []
 
@@ -241,32 +247,28 @@ class MLPAgent(Agent):
         np.savez(path, **payload)
 
 
-class AttentionAgent(Agent):
-    def __init__(self, latent_size: int = 10) -> None:
+class StateScorerAgent(Agent):
+    def __init__(self) -> None:
         super().__init__()
-        self.ws: ndarray | None = None
-        self.bs: ndarray | None = None
-        self.wa: ndarray | None = None
-        self.ba: ndarray | None = None
-        self.latent_size = latent_size
+        self.w: ndarray | None = None
+        self.b: ndarray | None = None
 
-        self.dt = .1
+        self.dt = 0.5
         self.temperature = 1.0
 
     def init_weights(self, features: Features) -> None:
-        if self.ws is None:
+        if self.w is None:
             Fs = features.state_hand.size
-            self.ws = np.random.normal(0.0, 1, size=(Fs, self.latent_size))  # (Fs, L)
-            self.bs = np.random.normal(0.0, 1, size=(self.latent_size, 1))  # (L, 1)
             Fa = features.actions.shape[1]
-            self.wa = np.random.normal(0.0, 1, size=(Fa, self.latent_size))  # (Fa, L)
-            self.ba = np.random.normal(0.0, 1, size=(1, self.latent_size))  # (1, L)
-            # (1, L) is better for broadcast with (A, L) action latents
+            self.w = np.random.normal(0.0, 2, size=(Fa, Fs))  # (Fa, Fs)
+            self.b = np.random.normal(0.0, 2, size=(Fa, 1))  # (Fa, 1)
 
     def update(self, reward: int) -> None:
         assert not self.frozen
+        advantage = reward - self.baseline
+        self.baseline += self.baseline_lr * (reward - self.baseline)
         for features, choice_idx, probs in self.trajectory:
-            self.update_weights(features, choice_idx, probs, reward)
+            self.update_weights(features, choice_idx, probs, advantage)
         self.trajectory = []
 
     def update_weights(
@@ -276,10 +278,8 @@ class AttentionAgent(Agent):
         probs: ndarray,
         reward: float,
     ) -> None:
-        assert self.ws is not None
-        assert self.wa is not None
-        assert self.bs is not None
-        assert self.ba is not None
+        assert self.w is not None
+        assert self.b is not None
 
         dR_dy = softmax_grad(probs, self.temperature, choice_idx, reward)[
             :, None
@@ -287,76 +287,46 @@ class AttentionAgent(Agent):
         xs = features.state_hand[:, None]  # (Fs, ) -> (Fs, 1)
         xa = features.actions  # (A, Fa)
 
-        # y = la @ ls shapes: (A, ) = (A, L) @ (L, )
-        # ls = self.ws @ xs + self.bs  shape would be (Fs, L) @ (Fs, 1) + (L, 1) but i need shape (L, Fs) @ (Fs, 1) + (L, 1) = (L, 1)
-        ls = self.ws.T @ xs + self.bs  # (L, 1)
-        la = xa @ self.wa + self.ba  # (A, Fa) @ (Fa, L) + (1, L) = (A, L)
+        # If not linear
+        # z = leaky_relu(self.w @ xs + self.b)  # (Fa, Fs) @ (Fs, 1) = (Fa, 1)
 
-        # dR_dy (A, 1)
-        # dy_dla = ls (L, 1)
-        # dR_dla (A, L) = dR_dy @ dy_dla = dR_dy @ ls shape would be (A, 1) @ (L, 1) but need (A, 1) @ (1, L)
-        dR_dla = dR_dy @ ls.T
-
-        # dR_dy (A, 1)
-        # dy_dls = la (A, L)
-        # dR_dls (L, 1) = dR_dy @ dy_dls = dR_dy @ la shape would be (A, 1) @ (A, L) but need (L, A) @ (A, 1)
-        dR_dls = la.T @ dR_dy  # (L, 1)
-
-        # dls_dws = xs
-        # dR_dws (Fs, L) = dR_dls @ dls_dws = dR_dls @ xs shape would be (L, 1) @ (Fs, 1) need (Fs, 1) @ (1, L)
-        dR_dws = xs @ dR_dls.T
-
-        # dls_dbs = 1
-        # dR_dbs (L, 1) = dR_dls @ dls_dws = dR_dls @ 1 shape would be (L, 1) @ 1 need (L, 1)
-        dR_dbs = dR_dls
-
-        # dla_dwa = xa
-        # dR_dwa (Fa, L) = dR_dla @ dla_dwa = dR_dla @ xa shape would be (A, L) @ (A, Fa) need (Fa, A) @ (A, L)
-        dR_dwa = xa.T @ dR_dla
-
-        # dla_dba = 1
-        # dR_dbb (1, L) = dR_dla @ dla_dba = dR_dla @ 1 shape would be (A, L) @ 1 need (L, 1) so (A, L).sum(axis = 0)
-        dR_dba = dR_dla.sum(axis=0, keepdims=True)
+        dR_dz = xa.T @ dR_dy  # (Fa, A) @ (A, 1) = (Fa, 1)
+        # dR_dz = dR_dz * leaky_relu_grad(z) # (Fa, 1)
+        dR_db = dR_dz  # (Fa, 1)
+        # dR_dw = dR_dz dz_dw
+        dR_dw = dR_dz @ xs.T  #  (Fa, 1) @ (1, Fs)
 
         dt = self.dt
-        self.ws += dR_dws * dt
-        self.wa += dR_dwa * dt
-        self.bs += dR_dbs * dt
-        self.ba += dR_dba * dt
+        self.w += dR_dw * dt
+        self.b += dR_db * dt
 
     def get_probabilities(self, features: Features) -> ndarray:
-        assert self.ws is not None
-        assert self.wa is not None
-        assert self.bs is not None
-        assert self.ba is not None
+        assert self.w is not None
+        assert self.b is not None
 
         xs = features.state_hand[:, None]  # (Fs, ) -> (Fs, 1)
         xa = features.actions  # (A, Fa)
 
-        ls = self.ws.T @ xs + self.bs  # (L, 1)
-        la = xa @ self.wa + self.ba  # (A, Fa) @ (Fa, L) = (A, L)
-        y = la @ ls
+        # If not linear
+        # z = leaky_relu(self.w @ xs + self.b)  # (Fa, Fs) @ (Fs, 1) = (Fa, 1)
+        z = self.w @ xs + self.b  # (Fa, Fs) @ (Fs, 1) = (Fa, 1)
+        y = xa @ z  # (A, Fa) @ (Fa, 1)
         y = y[:, 0]  # (A, 1) -> (A, )
 
-        return softmax(y, self.temperature)  # (A, L) @ (L, 1) = (A, )
+        return softmax(y, self.temperature)
 
     def save(self, path: str) -> None:
-        assert self.ws is not None
-        assert self.bs is not None
-        assert self.wa is not None
-        assert self.ba is not None
+        assert self.w is not None
+        assert self.b is not None
         np.savez(
             path,
             version=np.array(1, dtype=int),
-            kind=np.array("attention"),
+            kind=np.array("state_scorer"),
             dt=np.array(self.dt, dtype=float),
             temperature=np.array(self.temperature, dtype=float),
             frozen=np.array(int(self.frozen), dtype=int),
-            latent_size=np.array(self.latent_size, dtype=int),
-            ws=self.ws,
-            bs=self.bs,
-            wa=self.wa,
-            ba=self.ba,
+            w=self.w,
+            b=self.b,
         )
 
 
@@ -374,18 +344,10 @@ def load_agent(path: str) -> Agent:
         num_layers = int(checkpoint["num_layers"])
         agent.weights = [checkpoint[f"w{i}"] for i in range(num_layers)]
         agent.biases = [checkpoint[f"b{i}"] for i in range(num_layers)]
-    elif kind == "attention":
-        latent_size = int(
-            checkpoint["latent_size"]
-            if "latent_size" in checkpoint
-            else checkpoint["ws"].shape[1]
-        )
-        agent = AttentionAgent()
-        agent.latent_size = latent_size
-        agent.ws = checkpoint["ws"]
-        agent.bs = checkpoint["bs"]
-        agent.wa = checkpoint["wa"]
-        agent.ba = checkpoint["ba"]
+    elif kind == "state_scorer":
+        agent = StateScorerAgent()
+        agent.w = checkpoint["w"]
+        agent.b = checkpoint["b"]
     else:
         raise ValueError(f"Unknown agent kind in checkpoint: {kind}")
 
@@ -423,22 +385,15 @@ def clone_agent(agent: Agent, perturb_std: float = 0.0) -> Agent:
                 b + np.random.normal(0.0, perturb_std, size=b.shape)
                 for b in clone.biases
             ]
-    elif isinstance(agent, AttentionAgent):
-        clone = AttentionAgent()
-        assert agent.ws is not None
-        assert agent.bs is not None
-        assert agent.wa is not None
-        assert agent.ba is not None
-        clone.latent_size = agent.latent_size
-        clone.ws = agent.ws.copy()
-        clone.bs = agent.bs.copy()
-        clone.wa = agent.wa.copy()
-        clone.ba = agent.ba.copy()
+    elif isinstance(agent, StateScorerAgent):
+        clone = StateScorerAgent()
+        assert agent.w is not None
+        assert agent.b is not None
+        clone.w = agent.w.copy()
+        clone.b = agent.b.copy()
         if perturb_std > 0:
-            clone.ws += np.random.normal(0.0, perturb_std, size=clone.ws.shape)
-            clone.bs += np.random.normal(0.0, perturb_std, size=clone.bs.shape)
-            clone.wa += np.random.normal(0.0, perturb_std, size=clone.wa.shape)
-            clone.ba += np.random.normal(0.0, perturb_std, size=clone.ba.shape)
+            clone.w += np.random.normal(0.0, perturb_std, size=clone.w.shape)
+            clone.b += np.random.normal(0.0, perturb_std, size=clone.b.shape)
     else:
         raise ValueError(f"Unsupported agent type for cloning: {type(agent).__name__}")
 
@@ -472,3 +427,7 @@ def softmax_grad(y: ndarray, temp: float, choice_idx: int, reward: float) -> nda
     one_hot = np.zeros(y.shape[0])
     one_hot[choice_idx] = 1
     return reward * (one_hot - y) / max(temp, 1e-6)
+
+
+def tanh_grad(y: ndarray) -> ndarray:
+    return 1 - y**2

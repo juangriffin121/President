@@ -2,9 +2,10 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from president.player import Player, set_sleep_enabled
-from president.rl.agent import Agent, AttentionAgent, LinearAgent, MLPAgent
+from president.rl.agent import Agent, LinearAgent, MLPAgent, StateScorerAgent
+from president.rl.features import action_feat_names, hand_feat_names, state_feat_names
 from president.rl.hand_strength import HandStrengthPredictor
-from president.strategy import AgentStrategy, Smallest
+from president.strategy import AgentStrategy, Random, Smallest
 from president.table import Table
 from president.ui import writes
 
@@ -25,6 +26,7 @@ def train(
     agent: Agent | None = None,
     hand_strength_predictor: HandStrengthPredictor | None = None,
     log_hook: Callable[[int, AgentStrategy, Table], dict] | None = None,
+    players: list[Player] | None = None,
 ) -> tuple[AgentStrategy, TrainingLog]:
     writes.set_silent(True)
     set_sleep_enabled(False)
@@ -38,10 +40,12 @@ def train(
     agent_strategy = AgentStrategy(
         agent, hand_strength_predictor=hand_strength_predictor
     )
-    p1 = Player("p1", Smallest())
-    p2 = Player("p2", Smallest())
-    p3 = Player("p3", Smallest())
-    p4 = Player("p4", Smallest())
+    if players is None:
+        p1 = Player("p1", Smallest())
+        p2 = Player("p2", Smallest())
+        p3 = Player("p3", Smallest())
+        p4 = Player("p4", Smallest())
+        players = [p1, p2, p3, p4]
     a = Player("agent", agent_strategy)
 
     log = TrainingLog()
@@ -52,7 +56,7 @@ def train(
             agent.temperature = max(0.25 * starting_temp, agent.temperature * 0.90)
             agent.dt = max(0.1 * starting_dt, agent.dt * 0.90)
 
-        t = Table([p1, p2, a])
+        t = Table([*players, a])
         t.game()
         reward = agent_strategy.last_reward or 0
         prediction = agent_strategy.last_hand_strength_prediction
@@ -78,6 +82,7 @@ def test(
     num_games: int,
     agent: Agent,
     log_hook: Callable[[int, AgentStrategy, Table], dict] | None = None,
+    players: list[Player] | None = None,
 ) -> TrainingLog:
     writes.set_silent(True)
     set_sleep_enabled(False)
@@ -87,15 +92,17 @@ def test(
     agent_strategy = AgentStrategy(
         agent, hand_strength_predictor=hand_strength_predictor
     )
-    p1 = Player("p1", Smallest())
-    p2 = Player("p2", Smallest())
-    p3 = Player("p3", Smallest())
-    p4 = Player("p4", Smallest())
+    if players is None:
+        p1 = Player("p1", Smallest())
+        p2 = Player("p2", Smallest())
+        p3 = Player("p3", Smallest())
+        p4 = Player("p4", Smallest())
+        players = [p1, p2, p3, p4]
     a = Player("agent", agent_strategy)
 
     log = TrainingLog()
     for game_idx in range(num_games):
-        t = Table([p1, p2, p3, p4, a])
+        t = Table([*players, a])
         t.game()
         reward = agent_strategy.last_reward or 0
         prediction = agent_strategy.last_hand_strength_prediction
@@ -152,12 +159,45 @@ def plot_results(
 
 
 if __name__ == "__main__":
-    agent = AttentionAgent(10)
+    agent = StateScorerAgent()  # MLPAgent((128, 32, 8))
     strategy, log = train(2000, agent)
     agent = strategy.agent
+    players = [
+        Player("p1", Smallest()),
+        Player("p2", Smallest()),
+        Player("p3", Random()),
+    ]
 
     rewards = np.array(log.rewards, dtype=float)
     plot_results(
         rewards,
         agent_name="Agent",
     )
+
+    log = test(2000, agent)
+    rewards = np.array(log.rewards, dtype=float)
+    plot_results(
+        rewards,
+        agent_name="Agent",
+    )
+
+    players = [
+        Player("p1", Random()),
+        Player("p2", Random()),
+        Player("p3", Random()),
+    ]
+    log = test(2000, agent, players=players)
+    rewards = np.array(log.rewards, dtype=float)
+    plot_results(
+        rewards,
+        agent_name="Agent",
+    )
+
+    feature_names = hand_feat_names() + state_feat_names() + action_feat_names()
+    assert isinstance(agent, LinearAgent)
+    weights = agent.weights
+    assert weights is not None
+    assert len(feature_names) == weights.size
+
+    for name, weight in zip(feature_names, weights.squeeze()):
+        print(f"{name}: {weight:.2f}")

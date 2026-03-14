@@ -7,7 +7,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from president.player import Player, set_sleep_enabled
-from president.rl.agent import Agent, AttentionAgent, LinearAgent, MLPAgent, clone_agent
+from president.rl.agent import (
+    Agent,
+    LinearAgent,
+    MLPAgent,
+    StateScorerAgent,
+    clone_agent,
+)
 from president.strategy import AgentStrategy, Smallest
 from president.table import Table
 from president.ui import writes
@@ -23,7 +29,7 @@ class ExperimentConfig:
     )
     max_games: int = 2000
     test_games_per_checkpoint: int = 200
-    num_opponents: int = 3
+    num_opponents: int | None = None
     train_base_seed: int = (
         1000  # base seed for training games, actual seed for each games is computed from this number, to ensure replicability and make games fair for agents
     )
@@ -214,7 +220,7 @@ def run_experiment(
         raise ValueError("max_games must be > 0")
     if config.max_games % config.checkpoint_interval != 0:
         raise ValueError("max_games must be divisible by checkpoint_interval")
-    if config.num_opponents <= 0:
+    if config.num_opponents is not None and config.num_opponents <= 0:
         raise ValueError("num_opponents must be > 0")
 
     results: dict[str, FamilyResult] = {}
@@ -390,11 +396,13 @@ def _build_table(agent_strategy: AgentStrategy, num_opponents: int) -> Table:
 
 def _play_one_game(
     agent: Agent,
-    num_opponents: int,
+    num_opponents: int | None,
     seed: int,
 ) -> int:
     _set_seed(seed)
     strategy = AgentStrategy(agent)
+    if num_opponents is None:
+        num_opponents = random.choice([3, 4, 5, 6])
     table = _build_table(strategy, num_opponents)
     table.game()
     return strategy.last_reward or 0
@@ -403,7 +411,7 @@ def _play_one_game(
 def _evaluate_agent(
     agent: Agent,
     num_games: int,
-    num_opponents: int,
+    num_opponents: int | None,
     eval_seeds: list[int],
 ) -> np.ndarray:
     was_frozen = agent.frozen
@@ -411,6 +419,8 @@ def _evaluate_agent(
     rewards = []
     for i in range(num_games):
         seed = eval_seeds[i]
+        if num_opponents is None:
+            num_opponents = 3
         reward = _play_one_game(agent, num_opponents, seed)
         rewards.append(reward)
     if not was_frozen:
@@ -441,17 +451,22 @@ if __name__ == "__main__":
     # One-family smoke test config (edit as needed before running).
     families: dict[str, Callable[[], Agent]] = {
         "Linear": lambda: LinearAgent(),
+        "SSA": lambda: StateScorerAgent(),
+        # "MLP64": lambda: MLPAgent((64,)),
+        # "MLP128": lambda: MLPAgent((128,)),
+        # "MLP64-32": lambda: MLPAgent((64, 32)),
+        # "MLP64-32-16": lambda: MLPAgent((64, 32, 16)),
         # "MLP7-3": lambda: MLPAgent((7, 3)),
-        "MLP20": lambda: MLPAgent((20,)),
-        "AA10": lambda: AttentionAgent(5),
+        # "MLP20": lambda: MLPAgent((20,)),
+        # "MLP40": lambda: MLPAgent((20,)),
     }
 
     config = ExperimentConfig(
         num_agents=5,
-        checkpoint_interval=100,
+        checkpoint_interval=200,
         max_games=2000,
         test_games_per_checkpoint=100,
-        num_opponents=3,
+        # num_opponents=3,
         output_dir="artifacts_test_two_families",
         anneal_every_games=100,
     )

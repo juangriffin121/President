@@ -165,10 +165,10 @@ def get_state_features(
         last_play_count / 6,
         players_left / state.total_players,
         winners / state.total_players,
-        is_president,
-        is_vice_president,
-        is_vice_scum,
-        is_scum,
+        # is_president,
+        # is_vice_president,
+        # is_vice_scum,
+        # is_scum,
         bin_count / 50,
         bin_jokers / 2,
         bin_aces / 4,
@@ -326,3 +326,63 @@ def get_features(
         np.array(hand_features + state_features, dtype=float),
         np.array(action_feature_rows, dtype=float),
     )
+
+
+def hand_feat_names():
+    return [
+        "hand_count / initial_hand",
+        "jokers_in_hand / 2",
+        *[f"{i}s_count" for i in range(1, 13)],
+        "num_distinct_ranks / 12",
+        "num_pairs / (initial_hand / 2)",
+        "num_triples / (initial_hand / 3)",
+        "num_quads / (initial_hand / 4)",
+    ]
+
+
+def state_feat_names():
+    return [
+        "last_play_exists",
+        "last_play_rank_norm",
+        "last_play_count / 6",
+        "players_left / state.total_players",
+        "winners / state.total_players",
+        # is_president,
+        # is_vice_president,
+        # is_vice_scum,
+        # is_scum,
+        "bin_count / 50",
+        "bin_jokers / 2",
+        "bin_aces / 4",
+        "bin_avg_rank_norm",
+        "sum_other_hand_sizes / safe_other_total",
+        "avg_other_hand_size / initial_hand",
+        "current_seat_norm",
+        "seats_from_last_play_norm",
+        "min_other_hand_size / initial_hand",
+        "opp_at_most_2",
+        "opp_at_most_1",
+    ]
+
+
+def action_feat_names():
+    return [
+        "action_is_pass",
+        "action_count / 6",
+        "action_rank_norm",
+        "jokers_used / 2",
+        "uses_ace",
+        "empties_hand",
+        "fraction_hand_used",
+        "beats_last_by",
+        "breaks_larger_set",
+        "uses_joker_when_not_needed",
+        "remaining_hand_count / safe_hand_count",
+        "remaining_jokers / 2",
+        "rem_distinct / 12",
+        "rem_pairs / 12",
+        "rem_triples / 12",
+        "rem_quads / 12",
+        "remaining_high_cards / 6",
+        "unseen_higher_group_ratio",
+    ]

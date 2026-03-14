@@ -6,6 +6,7 @@ from president.ui import reads, writes
 from president.ranking import get_num, order_num, sort_hand
 from president.utils import possible_sets
 from president.rl.hand_strength import HandStrengthPredictor
+from president.rules import valid_choice
 
 
 class Strategy(ABC):
@@ -96,6 +97,42 @@ class Smallest(Strategy):
                 writes.write(f"{name}: :c")
             case -2:
                 writes.write(f"{name}: :'c")
+
+
+class Random(Strategy):
+    def choose_cards(
+        self, global_state: GlobalState, player_state: PlayerState
+    ) -> list[Card | Joker] | None:
+        import random
+
+        played = global_state.played if global_state else []
+        last_choice = played[-1] if played else None
+
+        possible = list(possible_sets(player_state.hand))
+        if last_choice is None:
+            if not possible:
+                return None
+            return random.choice(possible)
+
+        valid = [choice for choice in possible if valid_choice(choice, last_choice)]
+        valid.append(None)
+        return random.choice(valid)
+
+    def choose_worst(self, count, hand) -> list[Card | Joker]:
+        return _pick_min(count, hand)
+
+    def inform_of_results(self, performance: int, name: str):
+        match performance:
+            case 2:
+                writes.write(f"{name}: That was luck")
+            case 1:
+                writes.write(f"{name}: I got lucky")
+            case 0:
+                writes.write(f"{name}: Random works sometimes")
+            case -1:
+                writes.write(f"{name}: Bad luck")
+            case -2:
+                writes.write(f"{name}: RNG hates me")
 
 
 class UserStrategy(Strategy):
