@@ -2,7 +2,13 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from president.player import Player, set_sleep_enabled
-from president.rl.agent import Agent, LinearAgent, MLPAgent, StateScorerAgent
+from president.rl.agent import (
+    Agent,
+    LinearAgent,
+    MLPAgent,
+    StateScorerAgent,
+    ActorCritic,
+)
 from president.rl.features import action_feat_names, hand_feat_names, state_feat_names
 from president.rl.hand_strength import HandStrengthPredictor
 from president.strategy import AgentStrategy, Random, Smallest
@@ -159,15 +165,9 @@ def plot_results(
 
 
 if __name__ == "__main__":
-    agent = StateScorerAgent()  # MLPAgent((128, 32, 8))
+    agent = ActorCritic(20)  # MLPAgent((128, 32, 8))
     strategy, log = train(2000, agent)
     agent = strategy.agent
-    players = [
-        Player("p1", Smallest()),
-        Player("p2", Smallest()),
-        Player("p3", Random()),
-    ]
-
     rewards = np.array(log.rewards, dtype=float)
     plot_results(
         rewards,

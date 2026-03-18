@@ -8,11 +8,10 @@ import matplotlib.pyplot as plt
 
 from president.player import Player, set_sleep_enabled
 from president.rl.agent import (
+    ActorCritic,
     Agent,
     LinearAgent,
-    MLPAgent,
     StateScorerAgent,
-    clone_agent,
 )
 from president.strategy import AgentStrategy, Smallest
 from president.table import Table
@@ -189,8 +188,8 @@ def run_family_experiment(
             worst_ids = [int(i) for i in ordered if int(i) != best_agent_id]
             replace_count = min(config.replacement_per_checkpoint, len(worst_ids))
             for replaced_id in worst_ids[:replace_count]:
-                agents[replaced_id] = clone_agent(
-                    best_agent, perturb_std=config.replacement_noise_std
+                agents[replaced_id] = best_agent.clone(
+                    perturb_std=config.replacement_noise_std
                 )
                 print(
                     f"[POP] family={family_name} checkpoint={checkpoint} "
@@ -450,8 +449,8 @@ def _checkpoint_label(games_trained: int) -> str:
 if __name__ == "__main__":
     # One-family smoke test config (edit as needed before running).
     families: dict[str, Callable[[], Agent]] = {
-        "Linear": lambda: LinearAgent(),
         "SSA": lambda: StateScorerAgent(),
+        "AC": lambda: ActorCritic(20),
         # "MLP64": lambda: MLPAgent((64,)),
         # "MLP128": lambda: MLPAgent((128,)),
         # "MLP64-32": lambda: MLPAgent((64, 32)),

@@ -1,7 +1,10 @@
+from __future__ import annotations
 from abc import ABC, abstractmethod
 from numpy import ndarray, number
 import numpy as np
 from president.card import Card, Joker
+from president.nn.layers import Layer, Linear, Leaky_Relu, Tanh
+from president.nn.network import NeuralNetwork
 from president.rl.features import Features, get_features
 from president.state import GlobalState, PlayerState
 from president.rules import valid_choice
@@ -14,8 +17,8 @@ class Agent(ABC):
         self.trajectory: list[tuple[Features, int, ndarray]] = []
         self.worst_chosen: list[Card | Joker] = []
         self.frozen = False
-        self.dt = 0.1  # Redefined in subclasses
-        self.temperature = 1.0  # Redefined in subclasses
+        self.dt = 0.2  # Redefined in subclasses
+        self.temperature = 2.0  # Redefined in subclasses
         self.baseline = 0.0
         self.baseline_lr = 0.05
 
@@ -25,7 +28,7 @@ class Agent(ABC):
         last_played = state.played[-1] if state.played else None
         valid_actions = self.get_valid_actions(last_played, player_state.hand)
         features = get_features(state, player_state, valid_actions)
-        self.init_weights(features)
+        self.initialize(features)
         probs = self.get_probabilities(features)
         choice_idx, choice = self.choose(valid_actions, probs)
         if not self.frozen:
@@ -33,7 +36,7 @@ class Agent(ABC):
         return choice
 
     @abstractmethod
-    def init_weights(self, features: Features) -> None:
+    def initialize(self, features: Features) -> None:
         raise NotImplementedError
 
     def choose_worst(self, count, hand):
@@ -85,6 +88,15 @@ class Agent(ABC):
     def unfreeze(self):
         self.frozen = False
 
+    @abstractmethod
+    def clone(self,perturb_std: float = 0.1) -> Agent:
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def load(cls, checkpoint) -> Agent:
+        raise NotImplementedError
+
 
 class LinearAgent(Agent):
     def __init__(self) -> None:
@@ -93,7 +105,7 @@ class LinearAgent(Agent):
         self.dt = 0.6
         self.temperature = 3.0
 
-    def init_weights(self, features: Features) -> None:
+    def initialize(self, features: Features) -> None:
         if self.weights is None:
             num_features = features.state_hand.size + features.actions.shape[1]
             self.weights = np.random.normal(0.0, 4, size=num_features)
@@ -134,6 +146,24 @@ class LinearAgent(Agent):
             weights=self.weights,
         )
 
+    @classmethod
+    def load(cls, checkpoint) -> Agent:
+        agent = cls()
+        agent.weights = checkpoint["weights"]
+        return agent
+
+    def clone(self, perturb_std: float = 0.1) -> Agent:
+        clone = LinearAgent()
+        assert self.weights is not None
+        clone.weights = self.weights.copy()
+        if perturb_std > 0:
+            clone.weights += np.random.normal(
+                0.0, perturb_std, size=clone.weights.shape
+            )
+        return clone
+    
+        
+
 
 class MLPAgent(Agent):
     def __init__(self, hidden_layers_sizes: tuple[int, ...]) -> None:
@@ -147,7 +177,7 @@ class MLPAgent(Agent):
         self.biases: list[ndarray] | None = None
         self.neuron_log: list[tuple[list[ndarray], list[ndarray]]] = []
 
-    def init_weights(self, features: Features) -> None:
+    def initialize(self, features: Features) -> None:
         if self.weights is None:
             # layers_shape contains hidden layer sizes only.
             num_features = features.state_hand.size + features.actions.shape[1]
@@ -246,6 +276,35 @@ class MLPAgent(Agent):
             payload[f"b{idx}"] = b
         np.savez(path, **payload)
 
+    @classmethod
+    def load(cls, checkpoint) -> Agent:
+        hidden_layers = tuple(
+            int(x) for x in checkpoint["hidden_layers_sizes"].tolist()
+        )
+        agent = cls(hidden_layers)
+        num_layers = int(checkpoint["num_layers"])
+        agent.weights = [checkpoint[f"w{i}"] for i in range(num_layers)]
+        agent.biases = [checkpoint[f"b{i}"] for i in range(num_layers)]
+        agent.neuron_log = []
+        return agent
+
+    def clone(self, perturb_std: float = 0.1) -> Agent:
+        clone = MLPAgent(self.hidden_layers_sizes)
+        assert self.weights is not None
+        assert self.biases is not None
+        clone.weights = [w.copy() for w in self.weights]
+        clone.biases = [b.copy() for b in self.biases]
+        if perturb_std > 0:
+            clone.weights = [
+                w + np.random.normal(0.0, perturb_std, size=w.shape)
+                for w in clone.weights
+            ]
+            clone.biases = [
+                b + np.random.normal(0.0, perturb_std, size=b.shape)
+                for b in clone.biases
+            ]
+        return clone
+
 
 class StateScorerAgent(Agent):
     def __init__(self) -> None:
@@ -256,7 +315,7 @@ class StateScorerAgent(Agent):
         self.dt = 0.5
         self.temperature = 1.0
 
-    def init_weights(self, features: Features) -> None:
+    def initialize(self, features: Features) -> None:
         if self.w is None:
             Fs = features.state_hand.size
             Fa = features.actions.shape[1]
@@ -329,81 +388,221 @@ class StateScorerAgent(Agent):
             b=self.b,
         )
 
+    @classmethod
+    def load(cls, checkpoint) -> Agent:
+        agent = cls()
+        agent.w = checkpoint["w"]
+        agent.b = checkpoint["b"]
+        return agent
+
+    def clone(self, perturb_std: float = 0.1) -> Agent:
+        clone = StateScorerAgent()
+        assert self.w is not None
+        assert self.b is not None
+        clone.w = self.w.copy()
+        clone.b = self.b.copy()
+        if perturb_std > 0:
+            clone.w += np.random.normal(0.0, perturb_std, size=clone.w.shape)
+            clone.b += np.random.normal(0.0, perturb_std, size=clone.b.shape)
+        return clone
+
+
+class ActorCritic(Agent):
+    def __init__(self, latent_dim: int, critic_weight: float = 0.01):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.critic_weight: float = critic_weight
+        self.state_encoder_cache: list[list[ndarray]] = []
+        self.action_encoder_cache: list[list[ndarray]] = []
+        self.latent_cache: list[tuple[ndarray, ndarray]] = []
+        self.critic_cache: list[list[ndarray]] = []
+        self.state_values: list[ndarray] = (
+            []
+        )  # ndarray to make it easy to plug into backwards but single float
+
+    def _make_encoder(self, input_size):
+        return NeuralNetwork(
+            input_size,
+            [
+                Linear(4*input_size),
+                Leaky_Relu(),
+                Linear(self.latent_dim),
+                Leaky_Relu(),
+            ],
+        )
+
+    def initialize(self, features: Features) -> None:
+        if hasattr(self, "state_encoder"):
+            return
+        Fs = features.state_hand.size
+        Fa = features.actions.shape[1]
+        self.state_encoder = self._make_encoder(Fs) 
+        self.action_encoder = self._make_encoder(Fa) 
+        self.critic = NeuralNetwork(self.latent_dim, [Linear(1), Tanh()])
+
+        self.state_encoder.initialize()
+        self.action_encoder.initialize()
+        self.critic.initialize()
+
+    def get_probabilities(self, features: Features) -> ndarray:
+        xs = features.state_hand[:, None]  # (Fs, 1)
+        xa = features.actions.T  # (Fa, A)
+
+        ls, state_encoder_cache = self.state_encoder.forward(xs)  # (L, 1)
+        la, action_encoder_cache = self.action_encoder.forward(xa)  # (L, A)
+        v, critic_cache = self.critic.forward(ls)
+        v = 2 * v
+
+        if not self.frozen:
+            self.state_encoder_cache.append(state_encoder_cache)
+            self.action_encoder_cache.append(action_encoder_cache)
+            self.latent_cache.append((ls, la))
+            self.critic_cache.append(critic_cache)
+            self.state_values.append(v)
+
+        logits = la.T @ ls  # (A, L) @ (L, 1) = (A, 1)
+        probs = softmax(logits[:, 0], self.temperature)
+        return probs
+
+    def update(self, reward: int) -> None:
+        for (
+            (_, choice_idx, probs),
+            state_encoder_cache,
+            action_encoder_cache,
+            (ls, la),
+            critic_cache,
+            value_estimation,
+        ) in zip(
+            self.trajectory,
+            self.state_encoder_cache,
+            self.action_encoder_cache,
+            self.latent_cache,
+            self.critic_cache,
+            self.state_values,
+        ):
+
+            # L = critic_loss
+            # R = actor reward
+
+            dt = self.dt
+            advantage = reward - float(value_estimation[0][0])
+            dR_dy = softmax_grad(probs, self.temperature, choice_idx, advantage)[
+                :, None
+            ]  # (A, 1)
+            dL_dv = 2 * (
+                value_estimation - reward
+            )  # MSE for critic loss (/2 because Tanh returns [-2, 2] )
+            dL_dls = self.critic.backward(dL_dv, dt, critic_cache)
+
+            dR_dls = la @ dR_dy  # (L, A) @ (A, 1) = (L, 1)
+            dR_dla = ls @ dR_dy.T   # (L, 1) @ (1, A) = (L, A)
+
+            # print(f"{la.shape} @ {dR_dy.shape} = {dR_dls.shape}")
+            # print(f"{ls.shape} @ {dR_dy.T.shape} = {dR_dla.shape}")
+
+
+            self.state_encoder.backward(
+                -dR_dls + self.critic_weight * dL_dls, dt, state_encoder_cache
+            )  # negative because backward does gradient descent
+            self.action_encoder.backward(-dR_dla, dt, action_encoder_cache)
+
+        self.clear_cache()
+
+    def clear_cache(self):
+        self.trajectory = []
+        self.state_encoder_cache = []
+        self.action_encoder_cache = []
+        self.latent_cache = []
+        self.critic_cache = []
+        self.state_values = []
+
+    def save(self, path: str) -> None:
+        assert hasattr(self, "state_encoder")
+        assert hasattr(self, "action_encoder")
+        assert hasattr(self, "critic")
+        payload: dict[str, ndarray] = {
+            "version": np.array(1, dtype=int),
+            "kind": np.array("actor_critic"),
+            "dt": np.array(self.dt, dtype=float),
+            "temperature": np.array(self.temperature, dtype=float),
+            "frozen": np.array(int(self.frozen), dtype=int),
+            "latent_dim": np.array(self.latent_dim, dtype=int),
+            "critic_weight": np.array(self.critic_weight, dtype=float),
+            "state_input_size": np.array(self.state_encoder.input_size, dtype=int),
+            "action_input_size": np.array(self.action_encoder.input_size, dtype=int),
+        }
+
+        for key, nn_payload in self.state_encoder.save_payload().items():
+            payload[f"state_enc__{key}"] = nn_payload
+        for key, nn_payload in self.action_encoder.save_payload().items():
+            payload[f"action_enc__{key}"] = nn_payload
+        for key, nn_payload in self.critic.save_payload().items():
+            payload[f"critic__{key}"] = nn_payload
+        np.savez(path, **payload)
+
+    @classmethod
+    def load(cls, checkpoint) -> Agent:
+        latent_dim = int(checkpoint["latent_dim"])
+        critic_weight = (
+            float(checkpoint["critic_weight"])
+            if "critic_weight" in checkpoint
+            else 0.5
+        )
+        agent = cls(latent_dim, critic_weight=critic_weight)
+        Fs = int(checkpoint["state_input_size"])
+        Fa = int(checkpoint["action_input_size"])
+
+        agent.state_encoder = agent._make_encoder(Fs)
+        agent.state_encoder = agent._make_encoder(Fa)
+        agent.critic = NeuralNetwork(agent.latent_dim, [Linear(1), Tanh()])
+        agent.state_encoder.initialize()
+        agent.action_encoder.initialize()
+        agent.critic.initialize()
+
+        def extract_payload(prefix: str) -> dict[str, ndarray]:
+            num = int(checkpoint[f"{prefix}__num_linear_layers"])
+            payload = {"num_linear_layers": checkpoint[f"{prefix}__num_linear_layers"]}
+            for i in range(num):
+                payload[f"w{i}"] = checkpoint[f"{prefix}__w{i}"]
+                payload[f"b{i}"] = checkpoint[f"{prefix}__b{i}"]
+            return payload
+
+        agent.state_encoder.load(extract_payload("state_enc"))
+        agent.action_encoder.load(extract_payload("action_enc"))
+        agent.critic.load(extract_payload("critic"))
+        return agent
+
+    def clone(self, perturb_std: float = 0.0) -> Agent:
+        clone = ActorCritic(self.latent_dim, critic_weight=self.critic_weight)
+        assert hasattr(self, "state_encoder")
+        assert hasattr(self, "action_encoder")
+        assert hasattr(self, "critic")
+        clone.state_encoder = self.state_encoder.clone(perturb_std=perturb_std)
+        clone.action_encoder = self.action_encoder.clone(perturb_std=perturb_std)
+        clone.critic = self.critic.clone(perturb_std=perturb_std)
+        return clone
+
 
 def load_agent(path: str) -> Agent:
     checkpoint = np.load(path, allow_pickle=False)
     kind = str(checkpoint["kind"])
-    if kind == "linear":
-        agent = LinearAgent()
-        agent.weights = checkpoint["weights"]
-    elif kind == "mlp":
-        hidden_layers = tuple(
-            int(x) for x in checkpoint["hidden_layers_sizes"].tolist()
-        )
-        agent = MLPAgent(hidden_layers)
-        num_layers = int(checkpoint["num_layers"])
-        agent.weights = [checkpoint[f"w{i}"] for i in range(num_layers)]
-        agent.biases = [checkpoint[f"b{i}"] for i in range(num_layers)]
-    elif kind == "state_scorer":
-        agent = StateScorerAgent()
-        agent.w = checkpoint["w"]
-        agent.b = checkpoint["b"]
-    else:
-        raise ValueError(f"Unknown agent kind in checkpoint: {kind}")
+    match kind:
+        case "linear":
+            agent = LinearAgent.load(checkpoint)
+        case "mlp":
+            agent = MLPAgent.load(checkpoint)
+        case "state_scorer":
+            agent = StateScorerAgent.load(checkpoint)
+        case "actor_critic":
+            agent = ActorCritic.load(checkpoint)
+        case _:
+            raise ValueError(f"Unknown agent kind in checkpoint: {kind}")
 
     agent.dt = float(checkpoint["dt"])
     agent.temperature = float(checkpoint["temperature"])
     agent.frozen = bool(int(checkpoint["frozen"]))
-    agent.trajectory = []
-    agent.worst_chosen = []
-    if isinstance(agent, MLPAgent):
-        agent.neuron_log = []
+
     return agent
-
-
-def clone_agent(agent: Agent, perturb_std: float = 0.0) -> Agent:
-    if isinstance(agent, LinearAgent):
-        clone = LinearAgent()
-        assert agent.weights is not None
-        clone.weights = agent.weights.copy()
-        if perturb_std > 0:
-            clone.weights += np.random.normal(
-                0.0, perturb_std, size=clone.weights.shape
-            )
-    elif isinstance(agent, MLPAgent):
-        clone = MLPAgent(agent.hidden_layers_sizes)
-        assert agent.weights is not None
-        assert agent.biases is not None
-        clone.weights = [w.copy() for w in agent.weights]
-        clone.biases = [b.copy() for b in agent.biases]
-        if perturb_std > 0:
-            clone.weights = [
-                w + np.random.normal(0.0, perturb_std, size=w.shape)
-                for w in clone.weights
-            ]
-            clone.biases = [
-                b + np.random.normal(0.0, perturb_std, size=b.shape)
-                for b in clone.biases
-            ]
-    elif isinstance(agent, StateScorerAgent):
-        clone = StateScorerAgent()
-        assert agent.w is not None
-        assert agent.b is not None
-        clone.w = agent.w.copy()
-        clone.b = agent.b.copy()
-        if perturb_std > 0:
-            clone.w += np.random.normal(0.0, perturb_std, size=clone.w.shape)
-            clone.b += np.random.normal(0.0, perturb_std, size=clone.b.shape)
-    else:
-        raise ValueError(f"Unsupported agent type for cloning: {type(agent).__name__}")
-
-    clone.dt = agent.dt
-    clone.temperature = agent.temperature
-    clone.frozen = agent.frozen
-    clone.trajectory = []
-    clone.worst_chosen = []
-    return clone
-
 
 def leaky_relu(x: ndarray) -> ndarray:
     return np.where(x > 0, x, 0.1 * x)
