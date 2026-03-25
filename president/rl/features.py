@@ -5,6 +5,8 @@ from president.card import Card, Joker
 from president.ranking import get_num, order_num
 from president.state import GlobalState, PlayerState
 
+NUM_CARD_FEATS = 3
+
 
 @dataclass
 class Features:
@@ -17,6 +19,19 @@ class Features:
             return np.zeros((0, self.state_hand.shape[0] + self.actions.shape[1]))
         s = np.repeat(self.state_hand[None, :], self.actions.shape[0], axis=0)
         return np.concatenate([s, self.actions], axis=1)
+
+
+def get_card_features(hand: list[Card | Joker]) -> np.ndarray:
+    rank_counts = _rank_counts(hand)
+    card_feats = []
+    for card in hand:
+        is_joker = isinstance(card, Joker)
+        card_rank = card.num if not is_joker else 13  # Jokers are very powerful
+        in_group = (
+            rank_counts[card.num - 1] > 1 if not is_joker else 1
+        )  # Jokers are always in group with any card
+        card_feats.append([is_joker, card_rank / 13, in_group])
+    return np.array(card_feats)
 
 
 def get_hand_features(hand: list[Card | Joker], total_players: int) -> list[float]:

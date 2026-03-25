@@ -5,7 +5,7 @@ import numpy as np
 from president.card import Card, Joker
 from president.nn.layers import Layer, Linear, Leaky_Relu, Tanh
 from president.nn.network import NeuralNetwork
-from president.rl.features import Features, get_features
+from president.rl.features import NUM_CARD_FEATS, Features, get_card_features, get_features, get_hand_features
 from president.state import GlobalState, PlayerState
 from president.rules import valid_choice
 from president.utils import possible_sets
@@ -15,10 +15,14 @@ from president.ranking import get_num, order_num
 class Agent(ABC):
     def __init__(self) -> None:
         self.trajectory: list[tuple[Features, int, ndarray]] = []
-        self.worst_chosen: list[Card | Joker] = []
+        self.worst_chooser_cache: tuple[list[int], list[ndarray], list[ndarray]] = (
+            [],
+            [],
+            [],
+        )
         self.frozen = False
-        self.dt = 0.2  # Redefined in subclasses
-        self.temperature = 2.0  # Redefined in subclasses
+        self.dt = 0.5  # Redefined in subclasses
+        self.temperature = 5.0  # Redefined in subclasses
         self.baseline = 0.0
         self.baseline_lr = 0.05
 
@@ -35,15 +39,81 @@ class Agent(ABC):
             self.trajectory.append((features, choice_idx, probs))
         return choice
 
+    def initialize_worst_chooser(self):
+        if hasattr(self, "worst_chooser"):
+            return
+        self.worst_chooser = NeuralNetwork(NUM_CARD_FEATS, [Linear(1)])
+        self.worst_chooser.initialize()
+
     @abstractmethod
     def initialize(self, features: Features) -> None:
-        raise NotImplementedError
+        self.initialize_worst_chooser()
 
-    def choose_worst(self, count, hand):
-        # code
+    def choose_worst(self, count, hand) -> list[Card | Joker]:
+        card_feats = get_card_features(hand) # (C, Fc)
+        scores, cache = self.worst_chooser.forward(card_feats.T) # (Fc, C) -> (1, C)
+        probs = softmax(scores.T[:, 0], self.temperature)
+        idx1 = np.random.choice(len(probs), p=probs)
+        cards = [hand[idx1]]
+
+        probabilities = [probs]
+
+        idx2 = None
+        if count > 1:
+            probs2 = probs.copy()
+            probs2[idx1] = 0.0
+            total = probs2.sum()
+            if total > 0:
+                probs2 = probs2 / total
+            else:
+                probs2 = np.zeros_like(probs2)
+                probs2[[i for i in range(len(probs2)) if i != idx1]] = 1.0
+                probs2 = probs2 / probs2.sum()
+            idx2 = int(np.random.choice(len(probs2), p=probs2))
+            cards.append(hand[idx2])
+
+            probabilities.append(probs2)
+
         if not self.frozen:
-            pass
-            # self.worst_chosen =
+            worst_chosen = [idx1]
+            if idx2 is not None:
+                worst_chosen.append((idx2)) 
+
+            self.worst_chooser_cache = (worst_chosen, probabilities, cache)
+
+        return cards
+
+    def _update_worst_chooser(self, advantage: float) -> None:
+        if not hasattr(self, "worst_chooser"):
+            self.worst_chooser_cache = ([], [], [])
+            return
+        worst_chosen, probabilities, cache = self.worst_chooser_cache
+        if not worst_chosen:
+            return
+        assert not self.frozen
+        for choice_idx, probs in zip(worst_chosen, probabilities):
+            grad = softmax_grad(probs, self.temperature, choice_idx, advantage)
+            grad_output = grad[None, :]  # (1, C)
+            self.worst_chooser.backward(grad_output, self.dt, cache)
+        self.worst_chooser_cache = ([], [], [])
+
+    def _add_worst_payload(self, payload: dict[str, ndarray]) -> None:
+        if not hasattr(self, "worst_chooser"):
+            return
+        for key, value in self.worst_chooser.save_payload().items():
+            payload[f"worst__{key}"] = value
+
+    def _load_worst_payload(self, checkpoint) -> None:
+        key = "worst__num_linear_layers"
+        if key not in checkpoint:
+            return
+        self.initialize_worst_chooser()
+        num = int(checkpoint[key])
+        payload = {"num_linear_layers": checkpoint[key]}
+        for i in range(num):
+            payload[f"w{i}"] = checkpoint[f"worst__w{i}"]
+            payload[f"b{i}"] = checkpoint[f"worst__b{i}"]
+        self.worst_chooser.load(payload)
 
     @abstractmethod
     def save(self, path: str) -> None:
@@ -106,6 +176,7 @@ class LinearAgent(Agent):
         self.temperature = 3.0
 
     def initialize(self, features: Features) -> None:
+        super().initialize(features)
         if self.weights is None:
             num_features = features.state_hand.size + features.actions.shape[1]
             self.weights = np.random.normal(0.0, 4, size=num_features)
@@ -116,6 +187,7 @@ class LinearAgent(Agent):
         assert not self.frozen
         for features, choice_idx, probs in self.trajectory:
             self.update_weights(features, choice_idx, probs, advantage)
+        self._update_worst_chooser(advantage)
         self.trajectory = []
 
     def update_weights(
@@ -136,20 +208,22 @@ class LinearAgent(Agent):
 
     def save(self, path: str) -> None:
         assert self.weights is not None
-        np.savez(
-            path,
-            version=np.array(1, dtype=int),
-            kind=np.array("linear"),
-            dt=np.array(self.dt, dtype=float),
-            temperature=np.array(self.temperature, dtype=float),
-            frozen=np.array(int(self.frozen), dtype=int),
-            weights=self.weights,
-        )
+        payload: dict[str, ndarray] = {
+            "version": np.array(1, dtype=int),
+            "kind": np.array("linear"),
+            "dt": np.array(self.dt, dtype=float),
+            "temperature": np.array(self.temperature, dtype=float),
+            "frozen": np.array(int(self.frozen), dtype=int),
+            "weights": self.weights,
+        }
+        self._add_worst_payload(payload)
+        np.savez(path, **payload)
 
     @classmethod
     def load(cls, checkpoint) -> Agent:
         agent = cls()
         agent.weights = checkpoint["weights"]
+        agent._load_worst_payload(checkpoint)
         return agent
 
     def clone(self, perturb_std: float = 0.1) -> Agent:
@@ -178,6 +252,7 @@ class MLPAgent(Agent):
         self.neuron_log: list[tuple[list[ndarray], list[ndarray]]] = []
 
     def initialize(self, features: Features) -> None:
+        super().initialize(features)
         if self.weights is None:
             # layers_shape contains hidden layer sizes only.
             num_features = features.state_hand.size + features.actions.shape[1]
@@ -198,6 +273,7 @@ class MLPAgent(Agent):
             self.trajectory, self.neuron_log
         ):
             self.update_weights(choice_idx, probs, advantage, x_cache, y_cache)
+        self._update_worst_chooser(advantage)
         self.trajectory = []
         self.neuron_log = []
 
@@ -274,6 +350,7 @@ class MLPAgent(Agent):
             payload[f"w{idx}"] = w
         for idx, b in enumerate(self.biases):
             payload[f"b{idx}"] = b
+        self._add_worst_payload(payload)
         np.savez(path, **payload)
 
     @classmethod
@@ -286,6 +363,7 @@ class MLPAgent(Agent):
         agent.weights = [checkpoint[f"w{i}"] for i in range(num_layers)]
         agent.biases = [checkpoint[f"b{i}"] for i in range(num_layers)]
         agent.neuron_log = []
+        agent._load_worst_payload(checkpoint)
         return agent
 
     def clone(self, perturb_std: float = 0.1) -> Agent:
@@ -316,6 +394,7 @@ class StateScorerAgent(Agent):
         self.temperature = 1.0
 
     def initialize(self, features: Features) -> None:
+        super().initialize(features)
         if self.w is None:
             Fs = features.state_hand.size
             Fa = features.actions.shape[1]
@@ -328,6 +407,7 @@ class StateScorerAgent(Agent):
         self.baseline += self.baseline_lr * (reward - self.baseline)
         for features, choice_idx, probs in self.trajectory:
             self.update_weights(features, choice_idx, probs, advantage)
+        self._update_worst_chooser(advantage)
         self.trajectory = []
 
     def update_weights(
@@ -377,22 +457,24 @@ class StateScorerAgent(Agent):
     def save(self, path: str) -> None:
         assert self.w is not None
         assert self.b is not None
-        np.savez(
-            path,
-            version=np.array(1, dtype=int),
-            kind=np.array("state_scorer"),
-            dt=np.array(self.dt, dtype=float),
-            temperature=np.array(self.temperature, dtype=float),
-            frozen=np.array(int(self.frozen), dtype=int),
-            w=self.w,
-            b=self.b,
-        )
+        payload: dict[str, ndarray] = {
+            "version": np.array(1, dtype=int),
+            "kind": np.array("state_scorer"),
+            "dt": np.array(self.dt, dtype=float),
+            "temperature": np.array(self.temperature, dtype=float),
+            "frozen": np.array(int(self.frozen), dtype=int),
+            "w": self.w,
+            "b": self.b,
+        }
+        self._add_worst_payload(payload)
+        np.savez(path, **payload)
 
     @classmethod
     def load(cls, checkpoint) -> Agent:
         agent = cls()
         agent.w = checkpoint["w"]
         agent.b = checkpoint["b"]
+        agent._load_worst_payload(checkpoint)
         return agent
 
     def clone(self, perturb_std: float = 0.1) -> Agent:
@@ -408,7 +490,7 @@ class StateScorerAgent(Agent):
 
 
 class ActorCritic(Agent):
-    def __init__(self, latent_dim: int, critic_weight: float = 0.01):
+    def __init__(self, latent_dim: int, critic_weight: float = 0.1):
         super().__init__()
         self.latent_dim = latent_dim
         self.critic_weight: float = critic_weight
@@ -424,14 +506,15 @@ class ActorCritic(Agent):
         return NeuralNetwork(
             input_size,
             [
-                Linear(4*input_size),
-                Leaky_Relu(),
+                # Linear(2*input_size),
+                # Leaky_Relu(),
                 Linear(self.latent_dim),
                 Leaky_Relu(),
             ],
         )
 
     def initialize(self, features: Features) -> None:
+        super().initialize(features)
         if hasattr(self, "state_encoder"):
             return
         Fs = features.state_hand.size
@@ -465,6 +548,8 @@ class ActorCritic(Agent):
         return probs
 
     def update(self, reward: int) -> None:
+        advantage_wc = reward - self.baseline
+        self.baseline += self.baseline_lr * (reward - self.baseline)
         for (
             (_, choice_idx, probs),
             state_encoder_cache,
@@ -506,6 +591,7 @@ class ActorCritic(Agent):
             )  # negative because backward does gradient descent
             self.action_encoder.backward(-dR_dla, dt, action_encoder_cache)
 
+        self._update_worst_chooser(advantage_wc)
         self.clear_cache()
 
     def clear_cache(self):
@@ -538,6 +624,7 @@ class ActorCritic(Agent):
             payload[f"action_enc__{key}"] = nn_payload
         for key, nn_payload in self.critic.save_payload().items():
             payload[f"critic__{key}"] = nn_payload
+        self._add_worst_payload(payload)
         np.savez(path, **payload)
 
     @classmethod
@@ -570,6 +657,7 @@ class ActorCritic(Agent):
         agent.state_encoder.load(extract_payload("state_enc"))
         agent.action_encoder.load(extract_payload("action_enc"))
         agent.critic.load(extract_payload("critic"))
+        agent._load_worst_payload(checkpoint)
         return agent
 
     def clone(self, perturb_std: float = 0.0) -> Agent:

@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from president.card import Card, Joker
+from president.rl import agent
 from president.state import GlobalState, PlayerState
 from president.rl.agent import Agent
 from president.ui import reads, writes
@@ -210,7 +211,7 @@ class AgentStrategy(Strategy):
         return self.agent.choose_cards(global_state, player_state)
 
     def choose_worst(self, count, hand) -> list[Card | Joker]:
-        return super().choose_worst(count, hand)
+        return self.agent.choose_worst(count, hand)
 
     def on_deal(self, hand: list[Card | Joker], total_players: int) -> None:
         if self.hand_strength_predictor is not None:
