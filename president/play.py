@@ -1,5 +1,5 @@
 from president.player import Player
-from president.rl.agent import Agent, LinearAgent, MLPAgent, load_agent
+from president.rl.agent import Agent, load_agent
 from president.strategy import AgentStrategy, Smallest, UserStrategy
 from president.table import Table
 

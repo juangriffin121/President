@@ -2,12 +2,12 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from president.player import Player, set_sleep_enabled
-from president.rl.agent import (
-    Agent,
-    LinearAgent,
-    MLPAgent,
-    StateScorerAgent,
-    ActorCritic,
+from president.rl.agent import Agent
+from president.rl.card_choosers import (
+    ActorCriticChooser,
+    LinearChooser,
+    MLPChooser,
+    StateScorerChooser,
 )
 from president.rl.features import action_feat_names, hand_feat_names, state_feat_names
 from president.rl.hand_strength import HandStrengthPredictor
@@ -38,7 +38,7 @@ def train(
     set_sleep_enabled(False)
 
     if agent is None:
-        agent = MLPAgent((20,))  # LinearAgent()
+        agent = Agent(MLPChooser((20,)))  # Agent(LinearChooser())
 
     if hand_strength_predictor is None:
         hand_strength_predictor = HandStrengthPredictor()
@@ -165,7 +165,7 @@ def plot_results(
 
 
 if __name__ == "__main__":
-    agent = ActorCritic(20)  # MLPAgent((128, 32, 8))
+    agent = Agent(LinearChooser())  # Agent(MLPChooser((128, 32, 8)))
     strategy, log = train(2000, agent)
     agent = strategy.agent
     rewards = np.array(log.rewards, dtype=float)
@@ -194,8 +194,8 @@ if __name__ == "__main__":
     )
 
     feature_names = hand_feat_names() + state_feat_names() + action_feat_names()
-    assert isinstance(agent, LinearAgent)
-    weights = agent.weights
+    assert isinstance(agent.card_chooser, LinearChooser)
+    weights = agent.card_chooser.weights
     assert weights is not None
     assert len(feature_names) == weights.size
 

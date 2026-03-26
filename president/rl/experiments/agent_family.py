@@ -7,11 +7,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from president.player import Player, set_sleep_enabled
-from president.rl.agent import (
-    ActorCritic,
-    Agent,
-    LinearAgent,
-    StateScorerAgent,
+from president.rl.agent import Agent
+from president.rl.card_choosers import (
+    ActorCriticChooser,
+    LinearChooser,
+    MLPChooser,
+    StateScorerChooser,
 )
 from president.strategy import AgentStrategy, Smallest
 from president.table import Table
@@ -428,15 +429,16 @@ def _evaluate_agent(
 
 
 def _agent_base_name(agent: Agent) -> str:
-    if isinstance(agent, LinearAgent):
+    chooser = agent.card_chooser
+    if isinstance(chooser, LinearChooser):
         return "L"
 
-    hidden = getattr(agent, "hidden_layers_sizes", None)
+    hidden = getattr(chooser, "hidden_layers_sizes", None)
     if hidden is not None:
         txt = "_".join(str(int(x)) for x in hidden)
         return f"MLP__{txt}" if txt else "MLP"
 
-    return type(agent).__name__
+    return type(chooser).__name__
 
 
 def _checkpoint_label(games_trained: int) -> str:
@@ -449,15 +451,15 @@ def _checkpoint_label(games_trained: int) -> str:
 if __name__ == "__main__":
     # One-family smoke test config (edit as needed before running).
     families: dict[str, Callable[[], Agent]] = {
-        "SSA": lambda: StateScorerAgent(),
-        "AC": lambda: ActorCritic(20),
-        # "MLP64": lambda: MLPAgent((64,)),
-        # "MLP128": lambda: MLPAgent((128,)),
-        # "MLP64-32": lambda: MLPAgent((64, 32)),
-        # "MLP64-32-16": lambda: MLPAgent((64, 32, 16)),
-        # "MLP7-3": lambda: MLPAgent((7, 3)),
-        # "MLP20": lambda: MLPAgent((20,)),
-        # "MLP40": lambda: MLPAgent((20,)),
+        "SSA": lambda: Agent(StateScorerChooser()),
+        "AC": lambda: Agent(ActorCriticChooser(20)),
+        # "MLP64": lambda: Agent(MLPChooser((64,))),
+        # "MLP128": lambda: Agent(MLPChooser((128,))),
+        # "MLP64-32": lambda: Agent(MLPChooser((64, 32))),
+        # "MLP64-32-16": lambda: Agent(MLPChooser((64, 32, 16))),
+        # "MLP7-3": lambda: Agent(MLPChooser((7, 3))),
+        # "MLP20": lambda: Agent(MLPChooser((20,))),
+        # "MLP40": lambda: Agent(MLPChooser((20,))),
     }
 
     config = ExperimentConfig(

@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field
 
 from president.player import Player, set_sleep_enabled
-from president.rl.agent import ActorCritic, Agent, LinearAgent, MLPAgent
+from president.rl.agent import Agent
+from president.rl.card_choosers import ActorCriticChooser, LinearChooser, MLPChooser
 from president.rl.train import plot_results, train
 from president.strategy import AgentStrategy, Smallest
 from president.table import Table
@@ -23,7 +24,7 @@ def train_with_exchange(
     set_sleep_enabled(False)
 
     if agent is None:
-        agent = LinearAgent()
+        agent = Agent(LinearChooser())
 
     agent_strategy = AgentStrategy(agent)
     log = TrainingLog()
@@ -51,7 +52,7 @@ def train_with_exchange(
 
 
 if __name__ == "__main__":
-    agent = ActorCritic(20)  # MLPAgent((128, 32, 8))
+    agent = Agent(ActorCriticChooser(20))  # Agent(MLPChooser((128, 32, 8)))
     strategy, log = train(2000, agent)
     rewards = np.array(log.rewards, dtype=float)
     plot_results(
