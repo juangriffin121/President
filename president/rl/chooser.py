@@ -116,7 +116,7 @@ class WorstChooser:
             return
         for choice_idx, probs in zip(worst_chosen, probabilities):
             grad = _softmax_grad(probs, temperature, choice_idx, advantage)
-            grad_output = grad[None, :]  # (1, C)
+            grad_output = -grad[None, :]  # (1, C)
             self.nn.backward(grad_output, dt, cache)
         self._cache = ([], [], [])
 

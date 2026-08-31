@@ -2,7 +2,12 @@ from dataclasses import dataclass, field
 
 from president.player import Player, set_sleep_enabled
 from president.rl.agent import Agent
-from president.rl.card_choosers import ActorCriticChooser, LinearChooser, MLPChooser
+from president.rl.card_choosers import (
+    ActorCriticChooser,
+    LinearChooser,
+    MLPChooser,
+    StateScorerChooser,
+)
 from president.rl.train import plot_results, train
 from president.strategy import AgentStrategy, Smallest
 from president.table import Table
@@ -52,8 +57,8 @@ def train_with_exchange(
 
 
 if __name__ == "__main__":
-    agent = Agent(ActorCriticChooser(20))  # Agent(MLPChooser((128, 32, 8)))
-    strategy, log = train(2000, agent)
+    agent = Agent(ActorCriticChooser(10, 0.2))  # Agent(LinearChooser())  #
+    strategy, log = train(3000, agent)
     rewards = np.array(log.rewards, dtype=float)
     plot_results(
         rewards,
@@ -61,7 +66,7 @@ if __name__ == "__main__":
     )
 
     strategy, log = train_with_exchange(
-        num_episodes=200, games_per_episode=10, agent=strategy.agent
+        num_episodes=300, games_per_episode=10, agent=strategy.agent
     )
     rewards = np.array(log.rewards, dtype=float)
     plot_results(
