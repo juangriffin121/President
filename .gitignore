@@ -1,3 +1,5 @@
 *.png
 *.npz
+*.pyc
+*.mp4
 
