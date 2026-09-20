@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from president.card import Card, Joker
-from president.rl import agent
 from president.state import GlobalState, PlayerState
 from president.rl.agent import Agent
 from president.ui import reads, writes
@@ -26,7 +25,7 @@ class Strategy(ABC):
     def inform_of_results(self, performance: int, name: str):
         pass
 
-    def on_deal(self, hand: list[Card | Joker], total_players: int) -> None:
+    def observe_hand(self, hand: list[Card | Joker], total_players: int) -> None:
         pass
 
 
@@ -54,6 +53,11 @@ class Pass(Strategy):
 
 
 class Smallest(Strategy):
+    def __init__(self, hand_strength_predictor: HandStrengthPredictor | None = None) -> None:
+        self.last_reward: int | None = None
+        self.hand_strength_predictor = hand_strength_predictor
+        self.last_hand_strength_prediction: float | None = None
+
     def choose_cards(
         self, global_state: GlobalState, player_state: PlayerState
     ) -> list[Card | Joker] | None:
@@ -83,10 +87,19 @@ class Smallest(Strategy):
                 best = (key, choice)
         return None if best is None else best[1]
 
+    def observe_hand(self, hand: list[Card | Joker], total_players: int) -> None:
+        if self.hand_strength_predictor is not None:
+            self.hand_strength_predictor.observe_hand(hand, total_players)
+
     def choose_worst(self, count, hand) -> list[Card | Joker]:
         return _pick_min(count, hand)
 
     def inform_of_results(self, performance: int, name: str):
+        self.last_reward = performance
+        if self.hand_strength_predictor is not None:
+            self.last_hand_strength_prediction = self.hand_strength_predictor.update(
+                performance
+            )
         match performance:
             case 2:
                 writes.write(f"{name}: Yayyyyy")
@@ -199,11 +212,14 @@ class AgentStrategy(Strategy):
         self,
         agent: Agent,
         hand_strength_predictor: HandStrengthPredictor | None = None,
+        batch_size: int = 1,
     ) -> None:
         self.agent = agent
         self.last_reward: int | None = None
         self.hand_strength_predictor = hand_strength_predictor
         self.last_hand_strength_prediction: float | None = None
+        self.batch_size = batch_size
+        self._games_since_update = 0
 
     def choose_cards(
         self, global_state: GlobalState, player_state: PlayerState
@@ -213,7 +229,7 @@ class AgentStrategy(Strategy):
     def choose_worst(self, count, hand) -> list[Card | Joker]:
         return self.agent.choose_worst(count, hand)
 
-    def on_deal(self, hand: list[Card | Joker], total_players: int) -> None:
+    def observe_hand(self, hand: list[Card | Joker], total_players: int) -> None:
         if self.hand_strength_predictor is not None:
             self.hand_strength_predictor.observe_hand(hand, total_players)
 
@@ -224,8 +240,16 @@ class AgentStrategy(Strategy):
                 performance
             )
         if not self.agent.frozen:
-            writes.write(f"{name}: I'll be learning from this")
-            self.agent.update(performance)
+            if self.batch_size <= 1:
+                writes.write(f"{name}: I'll be learning from this")
+                self.agent.update(performance)
+            else:
+                self.agent.record_game(performance)
+                self._games_since_update += 1
+                if self._games_since_update >= self.batch_size:
+                    writes.write(f"{name}: I'll be learning from this batch")
+                    self.agent.apply_batch()
+                    self._games_since_update = 0
 
         match performance:
             case 2:

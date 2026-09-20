@@ -32,8 +32,9 @@ class Table:
         while len(cards) > 0:
             card = cards.pop()
             self.players[i].hand.append(card)
-            self.players[i].on_deal(self.total_players)
             i = (i + 1) % self.num_players()
+        for player in self.players:
+            player.observe_hand(self.total_players)
 
     def round(self, starting_player_idx: int):
         i = starting_player_idx
@@ -137,12 +138,18 @@ class Table:
             scum.hand.extend(from_president)
             president.hand.extend(from_scum)
 
+            president.observe_hand(self.total_players)
+            scum.observe_hand(self.total_players)
+
         # Vise-president <-> Vis-scum (1 card)
         if vise_president and vis_scum:
             from_vis_scum = take_best(vis_scum, 1)
             from_vise_president = take_worst(vise_president, 1)
             vis_scum.hand.extend(from_vise_president)
             vise_president.hand.extend(from_vis_scum)
+
+            vise_president.observe_hand(self.total_players)
+            vis_scum.observe_hand(self.total_players)
 
     def game(self):
         self.president = None
@@ -202,11 +209,11 @@ class Table:
             player.inform_of_results(performance)
 
     def __repr__(self) -> str:
-        txt = f"Players:\n"
+        txt = "Players:\n"
         for player in self.players:
             txt += player.__repr__()
 
-        txt += f"Winners:\n"
+        txt += "Winners:\n"
         for winner in self.winners:
             txt += winner.__repr__()
         txt += f"Played:\n\t{self.played}\n"

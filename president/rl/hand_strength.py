@@ -5,11 +5,10 @@ from president.rl.features import get_hand_features
 
 
 class HandStrengthPredictor:
-    def __init__(self, dt: float = 0.05, l2: float = 1e-4) -> None:
+    def __init__(self, dt: float = 0.05, l2: float = 0) -> None:
         self.dt = dt
         self.l2 = l2
         self.w: np.ndarray | None = None
-        self.b = 0.0
         self._last_features: np.ndarray | None = None
         self.frozen: bool = False
 
@@ -22,8 +21,8 @@ class HandStrengthPredictor:
     def predict_from_features(self, x: np.ndarray) -> float:
         if self.w is None:
             self.w = np.zeros_like(x)
-        y = float(x @ self.w + self.b)
-        return float(np.clip(y, -2.0, 2.0))
+        y = float(x @ self.w)
+        return float(2*np.tanh(y))
 
     def predict_hand(self, hand: list[Card | Joker], total_players: int) -> float:
         return self.predict_from_features(
@@ -34,13 +33,14 @@ class HandStrengthPredictor:
         if self._last_features is None:
             return None
         x = self._last_features
-        pred = self.predict_from_features(x)
+        assert self.w is not None
+        y = float(x @ self.w)
+        pred = float(2 * np.tanh(y))
 
         if not self.frozen:
             err = pred - float(actual_reward)
-            assert self.w is not None
-            self.w -= self.dt * (err * x + self.l2 * self.w)
-            self.b -= self.dt * err
+            grad_factor = err * 2 * (1 - np.tanh(y) ** 2)
+            self.w -= self.dt * (grad_factor * x + self.l2 * self.w)
         return pred
 
     def freeze(self):

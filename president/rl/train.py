@@ -33,18 +33,19 @@ def train(
     hand_strength_predictor: HandStrengthPredictor | None = None,
     log_hook: Callable[[int, AgentStrategy, Table], dict] | None = None,
     players: list[Player] | None = None,
+    batch_size: int = 1
 ) -> tuple[AgentStrategy, TrainingLog]:
     writes.set_silent(True)
     set_sleep_enabled(False)
 
     if agent is None:
-        agent = Agent(MLPChooser((20,)))  # Agent(LinearChooser())
+        agent = Agent(LinearChooser()) #Agent(ActorCriticChooser(20,0.2))  
 
     if hand_strength_predictor is None:
         hand_strength_predictor = HandStrengthPredictor()
 
     agent_strategy = AgentStrategy(
-        agent, hand_strength_predictor=hand_strength_predictor
+        agent, hand_strength_predictor=hand_strength_predictor, batch_size=batch_size
     )
     if players is None:
         p1 = Player("p1", Smallest())
@@ -80,7 +81,6 @@ def train(
             log.extras.append(log_hook(game_idx, agent_strategy, t))
 
     print(hand_strength_predictor.w)
-    print(hand_strength_predictor.b)
     return agent_strategy, log
 
 
@@ -165,14 +165,31 @@ def plot_results(
 
 
 if __name__ == "__main__":
-    agent = Agent(LinearChooser())  # Agent(MLPChooser((128, 32, 8)))
-    strategy, log = train(2000, agent)
+    batch_size = 5
+    # agent = Agent(ActorCriticChooser(4, 0., dt = batch_size*0.2, temperature=5))
+    # agent = Agent(MLPChooser((128, 32, 8), dt=2, temperature=5))  
+    agent = Agent(MLPChooser((7, 3), dt = batch_size*0.1, temperature=3))
+    # agent = Agent(LinearChooser(dt=batch_size*0.6, temperature=5))  
+    # agent =  Agent(StateScorerChooser(dt=batch_size*0.6, temperature=5))    
+
+
+    p1 = Player("p1", Smallest())
+    p2 = Player("p2", Smallest())
+    p3 = Player("p3", Smallest())
+    p4 = Player("p4", Smallest())
+    players = [p1, p2,  p3, p4]
+
+    strategy, log = train(2000, agent, batch_size=batch_size, players=players)
+
+
     agent = strategy.agent
     rewards = np.array(log.rewards, dtype=float)
     plot_results(
         rewards,
         agent_name="Agent",
     )
+
+    agent.temperature = 0.01
 
     log = test(2000, agent)
     rewards = np.array(log.rewards, dtype=float)

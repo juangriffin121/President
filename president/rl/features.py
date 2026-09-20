@@ -26,7 +26,7 @@ def get_card_features(hand: list[Card | Joker]) -> np.ndarray:
     card_feats = []
     for card in hand:
         is_joker = isinstance(card, Joker)
-        card_rank = card.num if not is_joker else 13  # Jokers are very powerful
+        card_rank = order_num(card.num) if not is_joker else 13  # Jokers are very powerful
         in_group = (
             rank_counts[card.num - 1] > 1 if not is_joker else 1
         )  # Jokers are always in group with any card
@@ -127,6 +127,8 @@ def get_state_features(
     )
     is_scum = int(player_id == state.scum) if state.scum is not None else 0
 
+    seat_offset = (player_id - state.president) % state.total_players / state.total_players if state.president is not None else 0
+
     bin_cards = state.bin
     bin_count = len(bin_cards)
     bin_jokers = sum(1 for c in bin_cards if isinstance(c, Joker))
@@ -180,10 +182,11 @@ def get_state_features(
         last_play_count / 6,
         players_left / state.total_players,
         winners / state.total_players,
-        # is_president,
-        # is_vice_president,
-        # is_vice_scum,
-        # is_scum,
+        is_president,
+        is_vice_president,
+        is_vice_scum,
+        is_scum,
+        seat_offset,
         bin_count / 50,
         bin_jokers / 2,
         bin_aces / 4,
@@ -362,10 +365,11 @@ def state_feat_names():
         "last_play_count / 6",
         "players_left / state.total_players",
         "winners / state.total_players",
-        # is_president,
-        # is_vice_president,
-        # is_vice_scum,
-        # is_scum,
+        "is_president",
+        "is_vice_president",
+        "is_vice_scum",
+        "is_scum",
+        "seat_offset",
         "bin_count / 50",
         "bin_jokers / 2",
         "bin_aces / 4",

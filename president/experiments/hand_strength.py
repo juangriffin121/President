@@ -69,7 +69,6 @@ def train(
             log.extras.append(log_hook(game_idx, agent_strategy, t))
 
     print(hand_strength_predictor.w)
-    print(hand_strength_predictor.b)
     return agent_strategy, log
 
 

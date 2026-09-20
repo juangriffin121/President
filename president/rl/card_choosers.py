@@ -10,10 +10,10 @@ from president.rl.features import Features
 
 
 class LinearChooser(CardChooser):
-    def __init__(self) -> None:
+    def __init__(self, dt: float = 0.6, temperature: float = 3.0) -> None:
         self.weights: ndarray | None = None
-        self.dt = 0.6
-        self.temperature = 3.0
+        self.dt = dt
+        self.temperature = temperature
         self.frozen = False
         self.baseline = 0.0
         self.baseline_lr = 0.05
@@ -32,13 +32,34 @@ class LinearChooser(CardChooser):
             self._update_weights(features, choice_idx, probs, advantage)
         return float(advantage)
 
+    def _weight_grad(
+        self, features: Features, choice_idx: int, probs: ndarray, advantage: float
+    ) -> ndarray:
+        flat_features = features.as_concatenated()
+        grad = _softmax_grad(probs, self.temperature, choice_idx, advantage)
+        return grad @ flat_features
+
     def _update_weights(
         self, features: Features, choice_idx: int, probs: ndarray, reward: float
     ) -> None:
         assert self.weights is not None
-        flat_features = features.as_concatenated()
-        grad = _softmax_grad(probs, self.temperature, choice_idx, reward)
-        self.weights += self.dt * grad @ flat_features
+        self.weights += self.dt * self._weight_grad(features, choice_idx, probs, reward)
+
+    def update_batch(
+        self, games: list[tuple[list[tuple[Features, int, ndarray]], int]]
+    ) -> float:
+        if self.frozen or not games or self.weights is None:
+            return 0.0
+        baseline = self.baseline
+        grad_accum = np.zeros_like(self.weights)
+        for trajectory, reward in games:
+            advantage = reward - baseline
+            for features, choice_idx, probs in trajectory:
+                grad_accum += self._weight_grad(features, choice_idx, probs, advantage)
+        self.weights += self.dt * grad_accum / len(games)
+        batch_mean_reward = sum(r for _, r in games) / len(games)
+        self.baseline += self.baseline_lr * (batch_mean_reward - self.baseline)
+        return float(batch_mean_reward - baseline)
 
     def get_probabilities(self, features: Features) -> ndarray:
         flat_features = features.as_concatenated()
@@ -84,9 +105,9 @@ class LinearChooser(CardChooser):
 
 
 class MLPChooser(CardChooser):
-    def __init__(self, hidden_layers_sizes: tuple[int, ...]) -> None:
-        self.dt = 0.1
-        self.temperature = 1.0
+    def __init__(self, hidden_layers_sizes: tuple[int, ...], dt:float=0.1, temperature:float=1.0) -> None:
+        self.dt = dt
+        self.temperature = temperature
         self.frozen = False
         self.baseline = 0.0
         self.baseline_lr = 0.05
@@ -121,6 +142,29 @@ class MLPChooser(CardChooser):
         self.neuron_log = []
         return float(advantage)
 
+    def _weight_grads(
+        self,
+        choice_idx: int,
+        probs: ndarray,
+        advantage: float,
+        x_cache: list[ndarray],
+        y_cache: list[ndarray],
+    ) -> tuple[list[ndarray], list[ndarray]]:
+        assert self.weights is not None
+        dR_dy = _softmax_grad(probs, self.temperature, choice_idx, advantage)[:, None]
+        dWs: list[ndarray] = [None] * len(self.weights)  # type: ignore
+        dbs: list[ndarray] = [None] * len(self.weights)  # type: ignore
+        for i in reversed(range(len(self.weights))):
+            w = self.weights[i]
+            x = x_cache[i]
+            dWs[i] = x.T @ dR_dy
+            dbs[i] = dR_dy.sum(axis=0)
+            if i > 0:
+                dR_dX = dR_dy @ w.T
+                y = y_cache[i - 1]
+                dR_dy = dR_dX * _leaky_relu_grad(y)
+        return dWs, dbs
+
     def _update_weights(
         self,
         choice_idx: int,
@@ -131,23 +175,37 @@ class MLPChooser(CardChooser):
     ) -> None:
         assert self.weights is not None
         assert self.biases is not None
+        dWs, dbs = self._weight_grads(choice_idx, probs, reward, x_cache, y_cache)
+        for i in range(len(self.weights)):
+            self.weights[i] += self.dt * dWs[i]
+            self.biases[i] += self.dt * dbs[i]
 
-        dR_dy = _softmax_grad(probs, self.temperature, choice_idx, reward)[:, None]
-
-        for i in reversed(range(len(self.weights))):
-            w = self.weights[i]
-            x = x_cache[i]
-
-            dR_dW = x.T @ dR_dy
-            dR_db = dR_dy.sum(axis=0)
-
-            if i > 0:
-                dR_dX = dR_dy @ w.T
-                y = y_cache[i - 1]
-                dR_dy = dR_dX * _leaky_relu_grad(y)
-
-            self.weights[i] += self.dt * dR_dW
-            self.biases[i] += self.dt * dR_db
+    def update_batch(
+        self, games: list[tuple[list[tuple[Features, int, ndarray]], int]]
+    ) -> float:
+        if self.frozen or not games or self.weights is None:
+            self.neuron_log = []
+            return 0.0
+        assert self.biases is not None
+        baseline = self.baseline
+        dW_accum = [np.zeros_like(w) for w in self.weights]
+        db_accum = [np.zeros_like(b) for b in self.biases]
+        log_iter = iter(self.neuron_log)
+        for trajectory, reward in games:
+            advantage = reward - baseline
+            for _, choice_idx, probs in trajectory:
+                x_cache, y_cache = next(log_iter)
+                dWs, dbs = self._weight_grads(choice_idx, probs, advantage, x_cache, y_cache)
+                for i in range(len(self.weights)):
+                    dW_accum[i] += dWs[i]
+                    db_accum[i] += dbs[i]
+        for i in range(len(self.weights)):
+            self.weights[i] += self.dt * dW_accum[i] / len(games)
+            self.biases[i] += self.dt * db_accum[i] / len(games)
+        batch_mean_reward = sum(r for _, r in games) / len(games)
+        self.baseline += self.baseline_lr * (batch_mean_reward - self.baseline)
+        self.neuron_log = []
+        return float(batch_mean_reward - baseline)
 
     def get_probabilities(self, features: Features) -> ndarray:
         assert self.weights is not None
@@ -228,11 +286,11 @@ class MLPChooser(CardChooser):
 
 
 class StateScorerChooser(CardChooser):
-    def __init__(self) -> None:
+    def __init__(self, dt:float=0.2, temperature:float = 3) -> None:
         self.w: ndarray | None = None
         self.b: ndarray | None = None
-        self.dt = 0.5
-        self.temperature = 1.0
+        self.dt = dt
+        self.temperature = temperature
         self.frozen = False
         self.baseline = 0.0
         self.baseline_lr = 0.05
@@ -253,23 +311,46 @@ class StateScorerChooser(CardChooser):
             self._update_weights(features, choice_idx, probs, advantage)
         return float(advantage)
 
+    def _weight_grad(
+        self, features: Features, choice_idx: int, probs: ndarray, advantage: float
+    ) -> tuple[ndarray, ndarray]:
+        dR_dy = _softmax_grad(probs, self.temperature, choice_idx, advantage)[:, None]
+        xs = features.state_hand[:, None]
+        xa = features.actions
+        dR_dz = xa.T @ dR_dy
+        dR_db = dR_dz
+        dR_dw = dR_dz @ xs.T
+        return dR_dw, dR_db
+
     def _update_weights(
         self, features: Features, choice_idx: int, probs: ndarray, reward: float
     ) -> None:
         assert self.w is not None
         assert self.b is not None
+        dR_dw, dR_db = self._weight_grad(features, choice_idx, probs, reward)
+        self.w += dR_dw * self.dt
+        self.b += dR_db * self.dt
 
-        dR_dy = _softmax_grad(probs, self.temperature, choice_idx, reward)[:, None]
-        xs = features.state_hand[:, None]
-        xa = features.actions
-
-        dR_dz = xa.T @ dR_dy
-        dR_db = dR_dz
-        dR_dw = dR_dz @ xs.T
-
-        dt = self.dt
-        self.w += dR_dw * dt
-        self.b += dR_db * dt
+    def update_batch(
+        self, games: list[tuple[list[tuple[Features, int, ndarray]], int]]
+    ) -> float:
+        if self.frozen or not games or self.w is None:
+            return 0.0
+        assert self.b is not None
+        baseline = self.baseline
+        dw_accum = np.zeros_like(self.w)
+        db_accum = np.zeros_like(self.b)
+        for trajectory, reward in games:
+            advantage = reward - baseline
+            for features, choice_idx, probs in trajectory:
+                dw, db = self._weight_grad(features, choice_idx, probs, advantage)
+                dw_accum += dw
+                db_accum += db
+        self.w += self.dt * dw_accum / len(games)
+        self.b += self.dt * db_accum / len(games)
+        batch_mean_reward = sum(r for _, r in games) / len(games)
+        self.baseline += self.baseline_lr * (batch_mean_reward - self.baseline)
+        return float(batch_mean_reward - baseline)
 
     def get_probabilities(self, features: Features) -> ndarray:
         assert self.w is not None
@@ -324,7 +405,7 @@ class StateScorerChooser(CardChooser):
 
 
 class ActorCriticChooser(CardChooser):
-    def __init__(self, latent_dim: int, critic_weight: float = 0.1):
+    def __init__(self, latent_dim: int, critic_weight: float = 0.1, dt: float=0.1, temperature: float = 5.0):
         self.latent_dim = latent_dim
         self.critic_weight: float = critic_weight
         self.state_encoder_cache: list[list[ndarray]] = []
@@ -333,8 +414,8 @@ class ActorCriticChooser(CardChooser):
         self.critic_cache: list[list[ndarray]] = []
         self.state_values: list[ndarray] = []
 
-        self.dt = 0.5
-        self.temperature = 1.0
+        self.dt = dt
+        self.temperature = temperature
         self.frozen = False
         self.baseline = 0.0
         self.baseline_lr = 0.05
@@ -407,7 +488,7 @@ class ActorCriticChooser(CardChooser):
             dR_dy = _softmax_grad(probs, self.temperature, choice_idx, advantage)[
                 :, None
             ]
-            dL_dv = 2 * (value_estimation - reward)
+            dL_dv = 4 * (value_estimation - reward) # two 2s, one from the 2*tanh and one from the loss (v-r)^2
             dL_dls = self.critic.backward(dL_dv, dt, critic_cache)
 
             dR_dls = la @ dR_dy
@@ -420,6 +501,55 @@ class ActorCriticChooser(CardChooser):
 
         self._clear_cache()
         return float(advantage_wc)
+
+    def update_batch(
+        self, games: list[tuple[list[tuple[Features, int, ndarray]], int]]
+    ) -> float:
+        if self.frozen or not games:
+            self._clear_cache()
+            return 0.0
+        baseline = self.baseline
+        dt = self.dt / len(games)
+
+        # Single shared iterator: consumes cache entries in play order across
+        # ALL games, so it doesn't restart at index 0 for every game.
+        cache_iter = zip(
+            self.state_encoder_cache,
+            self.action_encoder_cache,
+            self.latent_cache,
+            self.critic_cache,
+            self.state_values,
+        )
+
+        for trajectory, reward in games:
+            for (_, choice_idx, probs), cache_entry in zip(trajectory, cache_iter):
+                (
+                    state_encoder_cache,
+                    action_encoder_cache,
+                    (ls, la),
+                    critic_cache,
+                    value_estimation,
+                ) = cache_entry
+
+                step_advantage = reward - float(value_estimation[0][0])
+                dR_dy = _softmax_grad(
+                    probs, self.temperature, choice_idx, step_advantage
+                )[:, None]
+                dL_dv = 2 * (value_estimation - reward)
+                dL_dls = self.critic.backward(dL_dv, dt, critic_cache)
+
+                dR_dls = la @ dR_dy
+                dR_dla = ls @ dR_dy.T
+
+                self.state_encoder.backward(
+                    -dR_dls + self.critic_weight * dL_dls, dt, state_encoder_cache
+                )
+                self.action_encoder.backward(-dR_dla, dt, action_encoder_cache)
+
+        batch_mean_reward = sum(r for _, r in games) / len(games)
+        self.baseline += self.baseline_lr * (batch_mean_reward - self.baseline)
+        self._clear_cache()
+        return float(batch_mean_reward - baseline)
 
     def _clear_cache(self) -> None:
         self.state_encoder_cache = []

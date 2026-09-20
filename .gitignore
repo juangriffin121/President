@@ -2,4 +2,5 @@
 *.npz
 *.pyc
 *.mp4
-
+*.csv
+**/__pycache__/

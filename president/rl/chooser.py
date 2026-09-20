@@ -44,6 +44,30 @@ class CardChooser(ABC):
     def load(cls, checkpoint) -> "CardChooser":
         raise NotImplementedError
 
+    @abstractmethod
+    def update_batch(
+        self, games: list[tuple[list[tuple[Features, int, np.ndarray]], int]]
+    ) -> float:
+        """Apply one averaged update across several (trajectory, reward) games."""
+        raise NotImplementedError
+
+# currently only used for WorstChooser
+class RunningBaseline:
+    """Running mean that turns into an EMA once enough samples have been seen."""
+
+    def __init__(self, lr: float = 0.05) -> None:
+        self.lr = lr
+        self.value = 0.0
+        self.n = 0
+
+    def advantage(self, reward: float) -> float:
+        # No estimate yet: give no learning signal instead of comparing against a fake 0.
+        return reward - self.value if self.n > 0 else 0.0
+
+    def update(self, reward: float) -> None:
+        self.n += 1
+        step = max(1.0 / self.n, self.lr)  # 1/n during warm-up, then a plain EMA
+        self.value += step * (reward - self.value)
 
 class WorstChooser:
     def __init__(self) -> None:
@@ -53,12 +77,18 @@ class WorstChooser:
             [],
             [],
         )
+        self.baselines: dict[int, RunningBaseline] = {}
 
     def initialize(self) -> None:
         if self.nn is not None:
             return
         self.nn = NeuralNetwork(NUM_CARD_FEATS, [Linear(1)])
         self.nn.initialize()
+
+    def _baseline(self, num_cards: int) -> RunningBaseline:
+        if num_cards not in self.baselines:
+            self.baselines[num_cards] = RunningBaseline()
+        return self.baselines[num_cards]
 
     def choose(
         self,
@@ -102,23 +132,43 @@ class WorstChooser:
 
         return cards
 
-    def update(
-        self, advantage: float, dt: float, temperature: float, frozen: bool
-    ) -> None:
-        if frozen:
-            self._cache = ([], [], [])
-            return
-        if self.nn is None:
-            self._cache = ([], [], [])
-            return
-        worst_chosen, probabilities, cache = self._cache
-        if not worst_chosen:
-            return
-        for choice_idx, probs in zip(worst_chosen, probabilities):
-            grad = _softmax_grad(probs, temperature, choice_idx, advantage)
-            grad_output = -grad[None, :]  # (1, C)
-            self.nn.backward(grad_output, dt, cache)
+    def pop_cache(self) -> tuple[list[int], list[np.ndarray], list[np.ndarray]] | None:
+        """Return and clear the cache from the last choose() call, or None if it wasn't called."""
+        cache = self._cache
         self._cache = ([], [], [])
+        return cache if cache[0] else None
+    def update_batch(
+        self,
+        entries: list[tuple[tuple[list[int], list[np.ndarray], list[np.ndarray]], int]],
+        dt: float,
+        temperature: float,
+        frozen: bool,
+    ) -> None:
+        if frozen or not entries or self.nn is None:
+            return
+        n = len(entries)
+
+        # Advantages use the baselines as they were BEFORE this batch.
+        advantages = [
+            self._baseline(len(worst_chosen)).advantage(reward)
+            for (worst_chosen, _, _), reward in entries
+        ]
+
+        for ((worst_chosen, probabilities, cache), _), advantage in zip(entries, advantages):
+            for choice_idx, probs in zip(worst_chosen, probabilities):
+                grad = _softmax_grad(probs, temperature, choice_idx, advantage)
+                grad_output = -grad[None, :]
+                self.nn.backward(grad_output, dt / n, cache)
+
+        for (worst_chosen, _, _), reward in entries:
+            self._baseline(len(worst_chosen)).update(reward)
+
+    def update(self, reward: int, dt: float, temperature: float, frozen: bool) -> None:
+        cache = self.pop_cache()  # always clears the cache
+        if frozen or self.nn is None or cache is None:
+            return
+        self.update_batch([(cache, reward)], dt=dt, temperature=temperature, frozen=frozen)
+
 
     def save_payload(self) -> dict[str, np.ndarray]:
         if self.nn is None:

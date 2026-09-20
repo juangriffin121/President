@@ -38,15 +38,16 @@ class ExperimentConfig:
     )
     output_dir: str = "artifacts"
     anneal_every_games: int = 200  # Num games before annealing, deminishing dt and temp
-    min_temperature_pct: float = 0.25
+    min_temperature_pct: float = 0.1
     min_dt_pct: float = 0.1
     temp_annealing_coef: float = 0.9
     dt_annealing_coef: float = 0.9
     replacement_per_checkpoint: int = 1
     replacement_noise_std: float = 0.02
     colors: list[str] = field(
-        default_factory=lambda: ["blue", "red", "green", "cyan", "magenta", "yellow"]
+        default_factory=lambda: ["blue", "red", "green", "cyan", "magenta", "yellow", "orange", "brown", "black"]
     )
+    batch_size: int = 1
 
 
 @dataclass
@@ -81,6 +82,9 @@ def run_family_experiment(
         )
 
     agents = [agent_factory() for _ in range(config.num_agents)]
+    strategies = [
+        AgentStrategy(agent, batch_size=config.batch_size) for agent in agents
+    ]
     init_temps = np.array([agent.temperature for agent in agents], dtype=float)
     init_dts = np.array([agent.dt for agent in agents], dtype=float)
     temp_10pct_games = np.full(config.num_agents, -1, dtype=int)
@@ -109,10 +113,12 @@ def run_family_experiment(
         print(f"[CHECKPOINT] family={family_name} target_games={checkpoint}")
         test_means = []
         for agent_id, agent in enumerate(agents):
+            strategy = strategies[agent_id]
             print(
                 f"[TRAIN] family={family_name} agent={agent_id} "
                 f"start={games_trained[agent_id]} target={checkpoint}"
             )
+
             # until agent reaches checkpoint train agent
             while games_trained[agent_id] < checkpoint:
                 game_num = games_trained[agent_id]
@@ -138,7 +144,7 @@ def run_family_experiment(
 
                 train_seed = config.train_base_seed + agent_id * 1_000_000 + game_num
                 reward = _play_one_game(
-                    agent,
+                    strategy,
                     num_opponents=config.num_opponents,
                     seed=train_seed,
                 )
@@ -192,6 +198,7 @@ def run_family_experiment(
                 agents[replaced_id] = best_agent.clone(
                     perturb_std=config.replacement_noise_std
                 )
+                strategies[replaced_id] = AgentStrategy(agents[replaced_id], batch_size=config.batch_size)
                 print(
                     f"[POP] family={family_name} checkpoint={checkpoint} "
                     f"replaced_agent={replaced_id} source_best={best_agent_id} "
@@ -250,7 +257,7 @@ def plot(
         2,
         1,
         sharex=True,
-        figsize=(11, 8),
+        figsize=(20, 10),
         gridspec_kw={"height_ratios": [2, 1]},
     )
 
@@ -395,12 +402,11 @@ def _build_table(agent_strategy: AgentStrategy, num_opponents: int) -> Table:
 
 
 def _play_one_game(
-    agent: Agent,
+    strategy: AgentStrategy,
     num_opponents: int | None,
     seed: int,
 ) -> int:
     _set_seed(seed)
-    strategy = AgentStrategy(agent)
     if num_opponents is None:
         num_opponents = random.choice([3, 4, 5, 6])
     table = _build_table(strategy, num_opponents)
@@ -416,15 +422,19 @@ def _evaluate_agent(
 ) -> np.ndarray:
     was_frozen = agent.frozen
     agent.freeze()
+    prev_temp = agent.temperature
+    agent.temperature = 0.01 
+    strategy = AgentStrategy(agent, batch_size=config.batch_size) 
     rewards = []
     for i in range(num_games):
         seed = eval_seeds[i]
         if num_opponents is None:
             num_opponents = 3
-        reward = _play_one_game(agent, num_opponents, seed)
+        reward = _play_one_game(strategy, num_opponents, seed)
         rewards.append(reward)
     if not was_frozen:
         agent.unfreeze()
+    agent.temperature = prev_temp
     return np.array(rewards, dtype=float)
 
 
@@ -449,27 +459,30 @@ def _checkpoint_label(games_trained: int) -> str:
 
 
 if __name__ == "__main__":
-    # One-family smoke test config (edit as needed before running).
+    batch_size = 5
+
     families: dict[str, Callable[[], Agent]] = {
-        "SSA": lambda: Agent(StateScorerChooser()),
-        "AC": lambda: Agent(ActorCriticChooser(20)),
-        # "MLP64": lambda: Agent(MLPChooser((64,))),
-        # "MLP128": lambda: Agent(MLPChooser((128,))),
-        # "MLP64-32": lambda: Agent(MLPChooser((64, 32))),
-        # "MLP64-32-16": lambda: Agent(MLPChooser((64, 32, 16))),
-        # "MLP7-3": lambda: Agent(MLPChooser((7, 3))),
-        # "MLP20": lambda: Agent(MLPChooser((20,))),
-        # "MLP40": lambda: Agent(MLPChooser((20,))),
+            "Linear": lambda: Agent(LinearChooser(dt=batch_size*0.6, temperature=5)), 
+            "SSA": lambda: Agent(StateScorerChooser(dt=batch_size*0.6, temperature=5)),            
+            "AC": lambda: Agent(ActorCriticChooser(4, 0., dt = batch_size*0.2, temperature=5)),
+            "MLP64": lambda: Agent(MLPChooser((64,), dt = batch_size*0.1, temperature=3)),
+            # "MLP128": lambda: Agent(MLPChooser((128,), dt = batch_size*0.1, temperature=3)),
+            # "MLP64-32": lambda: Agent(MLPChooser((64, 32), dt = batch_size*0.1, temperature=3)),
+            # "MLP64-32-16": lambda: Agent(MLPChooser((64, 32, 16), dt = batch_size*0.1, temperature=3)),
+            # "MLP7-3": lambda: Agent(MLPChooser((7, 3), dt = batch_size*0.1, temperature=3)),
+            # "MLP20": lambda: Agent(MLPChooser((20,), dt = batch_size*0.1, temperature=3)),
+            # "MLP40": lambda: Agent(MLPChooser((20,), dt = batch_size*0.1, temperature=3)),
     }
 
     config = ExperimentConfig(
         num_agents=5,
-        checkpoint_interval=200,
-        max_games=2000,
+        num_opponents=3,
+        checkpoint_interval=500,
+        max_games=5000,
         test_games_per_checkpoint=100,
-        # num_opponents=3,
-        output_dir="artifacts_test_two_families",
-        anneal_every_games=100,
+        output_dir="AgentFamily",
+        anneal_every_games=250,
+        batch_size=batch_size
     )
 
     run_experiment(families, config)

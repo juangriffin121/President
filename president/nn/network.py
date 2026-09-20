@@ -86,7 +86,7 @@ class NeuralNetwork:
 
     def load(self, payload: dict[str, np.ndarray]) -> None:
         num_layers = int(payload["num_linear_layers"])
-        assert len(self.layers) == num_layers
+        assert len([layer for layer in self.layers if isinstance(layer, Linear)]) == num_layers
         weights = [payload[f"w{i}"] for i in range(num_layers)]
         biases = [payload[f"b{i}"] for i in range(num_layers)]
         w_idx = 0

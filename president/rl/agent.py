@@ -21,6 +21,8 @@ class Agent:
         self.card_chooser = card_chooser
         self.worst_chooser = WorstChooser()
         self.trajectory: list[tuple[Features, int, np.ndarray]] = []
+        self.pending_games: list[tuple[list[tuple[Features, int, np.ndarray]], int]] = []
+        self.pending_worst: list[tuple[tuple, int]] = []
 
     def choose_cards(
         self, state: GlobalState, player_state: PlayerState
@@ -44,14 +46,36 @@ class Agent:
         )
 
     def update(self, reward: int) -> None:
-        advantage = self.card_chooser.update(self.trajectory, reward)
+        self.card_chooser.update(self.trajectory, reward)
         self.worst_chooser.update(
-            advantage=advantage,
+            reward=reward,
             dt=self.dt,
             temperature=self.temperature,
             frozen=self.frozen,
         )
         self.trajectory = []
+
+    def record_game(self, reward: int) -> None:
+        """Stash this game's trajectory for a later batched update instead of applying now."""
+        self.pending_games.append((self.trajectory, reward))
+        worst_cache = self.worst_chooser.pop_cache()
+        if worst_cache is not None:
+            self.pending_worst.append((worst_cache, reward))
+        self.trajectory = []
+
+    def apply_batch(self) -> float:
+        if not self.pending_games:
+            return 0.0
+        advantage = self.card_chooser.update_batch(self.pending_games)
+        self.worst_chooser.update_batch(
+            self.pending_worst,
+            dt=self.dt,
+            temperature=self.temperature,
+            frozen=self.frozen,
+        )
+        self.pending_games = []
+        self.pending_worst = []
+        return advantage
 
     def choose(
         self, actions: list[list[Card | Joker] | None], probs: np.ndarray

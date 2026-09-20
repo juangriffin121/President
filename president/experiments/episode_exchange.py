@@ -24,6 +24,7 @@ def train_with_exchange(
     num_episodes: int,
     games_per_episode: int = 5,
     agent: Agent | None = None,
+    batch_size: int | None = None,
 ) -> tuple[AgentStrategy, TrainingLog]:
     writes.set_silent(True)
     set_sleep_enabled(False)
@@ -31,7 +32,7 @@ def train_with_exchange(
     if agent is None:
         agent = Agent(LinearChooser())
 
-    agent_strategy = AgentStrategy(agent)
+    agent_strategy = AgentStrategy(agent, batch_size=batch_size or games_per_episode)
     log = TrainingLog()
 
     for episode_idx in range(num_episodes):
@@ -53,20 +54,29 @@ def train_with_exchange(
             f"games_per_episode={games_per_episode}"
         )
 
+    if agent_strategy.agent.pending_games:
+        agent_strategy.agent.apply_batch()
+
     return agent_strategy, log
 
 
 if __name__ == "__main__":
-    agent = Agent(ActorCriticChooser(10, 0.2))  # Agent(LinearChooser())  #
-    strategy, log = train(3000, agent)
+
+    # agent = Agent(LinearChooser(dt=batch_size*0.6, temperature=3))  
+    agent = Agent(StateScorerChooser(dt=2, temperature=5))  
+    # agent = Agent(MLPChooser((128, 32, 8)))
+    """
+    strategy, log = train(3000, agent, batch_size=5)
     rewards = np.array(log.rewards, dtype=float)
     plot_results(
-        rewards,
-        agent_name="Agent",
+       rewards,
+       agent_name="Agent",
     )
+    agent = strategy.agent
+    """
 
     strategy, log = train_with_exchange(
-        num_episodes=300, games_per_episode=10, agent=strategy.agent
+        num_episodes=500, games_per_episode=20, agent=agent, batch_size=5
     )
     rewards = np.array(log.rewards, dtype=float)
     plot_results(
