@@ -49,6 +49,28 @@ class ExperimentConfig:
     )
     batch_size: int = 1
 
+    # ---- exchange mechanic -------------------------------------------------
+    games_per_table: int = (
+        1  # Consecutive games played on the SAME table before it is rebuilt from scratch.
+        # Game 1 of a table has no exchange, games 2..N do (president<->scum etc).
+        # 1 = no exchange at all (the old behaviour).
+    )
+    pretrain_games: int = (
+        0  # The first N games (counted inside max_games) are trained on fresh tables, no exchange,
+        # so the agent can learn the basic rules first. 0 = exchange from the very start.
+    )
+    eval_games_per_table: int | None = (
+        None  # Same idea for the test games. None = use games_per_table (test in the setting you train for).
+        # Set to 1 to always evaluate without exchange.
+    )
+
+
+    @property
+    def eval_table_len(self) -> int:
+        return self.eval_games_per_table or self.games_per_table
+
+    plot_10pct_line: bool = True
+
 
 @dataclass
 class FamilyResult:
@@ -85,6 +107,9 @@ def run_family_experiment(
     strategies = [
         AgentStrategy(agent, batch_size=config.batch_size) for agent in agents
     ]
+    # The table each agent is currently training on. Persists across checkpoints
+    # (tests happen between games, so a table can span a checkpoint without problems).
+    tables: list[Table | None] = [None for _ in range(config.num_agents)]
     init_temps = np.array([agent.temperature for agent in agents], dtype=float)
     init_dts = np.array([agent.dt for agent in agents], dtype=float)
     temp_10pct_games = np.full(config.num_agents, -1, dtype=int)
@@ -106,7 +131,9 @@ def run_family_experiment(
     family_name = _agent_base_name(agents[0]) if agents else "Unknown"
     print(
         f"[START] family={family_name} agents={config.num_agents} "
-        f"checkpoints={len(checkpoints)} max_games={config.max_games}"
+        f"checkpoints={len(checkpoints)} max_games={config.max_games} "
+        f"games_per_table={config.games_per_table} pretrain_games={config.pretrain_games} "
+        f"eval_games_per_table={config.eval_table_len}"
     )
 
     for checkpoint in checkpoints:
@@ -143,11 +170,16 @@ def run_family_experiment(
                         dt_10pct_games[agent_id] = games_trained[agent_id]
 
                 train_seed = config.train_base_seed + agent_id * 1_000_000 + game_num
-                reward = _play_one_game(
-                    strategy,
-                    num_opponents=config.num_opponents,
-                    seed=train_seed,
-                )
+
+                # new table or keep playing on the current one (=> exchange happens)
+                table = tables[agent_id]
+                new_table = table is None or _starts_new_table(game_num, config)
+                if new_table:
+                    table = _new_table(strategy, config.num_opponents, train_seed)
+                    tables[agent_id] = table
+                assert table is not None
+
+                reward = _play_game(table, strategy, train_seed, new_table)
                 train_rewards[agent_id].append(reward)
                 games_trained[agent_id] += 1
                 if (
@@ -168,6 +200,8 @@ def run_family_experiment(
                 config.test_games_per_checkpoint,
                 config.num_opponents,
                 eval_seeds,
+                batch_size=config.batch_size,
+                games_per_table=config.eval_table_len,
             )
             test_rewards[agent_id].append(test_reward)
 
@@ -187,7 +221,8 @@ def run_family_experiment(
 
         base_name = _agent_base_name(best_agent)
         ckpt_label = _checkpoint_label(checkpoint)
-        best_name = f"{base_name}__{ckpt_label}__S__{config.num_opponents}.npz"
+        exchange_tag = f"__X{config.games_per_table}" if config.games_per_table > 1 else ""
+        best_name = f"{base_name}__{ckpt_label}__S__{config.num_opponents}{exchange_tag}.npz"
         best_agent.save(str(agents_dir / best_name))
 
         if config.replacement_per_checkpoint > 0 and config.num_agents > 1:
@@ -199,6 +234,7 @@ def run_family_experiment(
                     perturb_std=config.replacement_noise_std
                 )
                 strategies[replaced_id] = AgentStrategy(agents[replaced_id], batch_size=config.batch_size)
+                tables[replaced_id] = None  # old table still holds the old strategy
                 print(
                     f"[POP] family={family_name} checkpoint={checkpoint} "
                     f"replaced_agent={replaced_id} source_best={best_agent_id} "
@@ -229,6 +265,20 @@ def run_experiment(
         raise ValueError("max_games must be divisible by checkpoint_interval")
     if config.num_opponents is not None and config.num_opponents <= 0:
         raise ValueError("num_opponents must be > 0")
+    if config.games_per_table <= 0:
+        raise ValueError("games_per_table must be > 0")
+    if config.pretrain_games < 0 or config.pretrain_games > config.max_games:
+        raise ValueError("pretrain_games must be between 0 and max_games")
+    if config.eval_games_per_table is not None and config.eval_games_per_table <= 0:
+        raise ValueError("eval_games_per_table must be > 0")
+    if config.games_per_table > 1 and (
+        config.checkpoint_interval % config.games_per_table != 0
+        or config.pretrain_games % config.games_per_table != 0
+    ):
+        print(
+            "[WARN] checkpoint_interval / pretrain_games are not multiples of games_per_table: "
+            "tables will span checkpoints (harmless, but a replaced agent restarts its table mid-way)."
+        )
 
     results: dict[str, FamilyResult] = {}
     for family_name, agent_factory in families.items():
@@ -270,6 +320,7 @@ def plot(
             ax_spaghetti,
             color,
             family_name,
+            plot_10pct_line=config.plot_10pct_line
         )
         plot_family_test_results(
             family_result.test_rewards, checkpoints, ax_test, color, family_name
@@ -285,7 +336,32 @@ def plot(
         )
         ax_test.axvline(ckpt, color="gray", linewidth=0.7, alpha=0.25, linestyle="--")
 
-    ax_spaghetti.set_title("Training Spaghetti + Checkpoint Test Performance")
+    # mark the moment exchange gets switched on after the no-exchange pretraining
+    if config.pretrain_games > 0 and config.games_per_table > 1:
+        for ax in (ax_spaghetti, ax_test):
+            ax.axvline(
+                config.pretrain_games,
+                color="black",
+                linestyle="-.",
+                linewidth=1.2,
+                alpha=0.6,
+            )
+        ax_spaghetti.text(
+            config.pretrain_games,
+            0.02,
+            "exchange on",
+            fontsize=8,
+            rotation=90,
+            va="bottom",
+            ha="right",
+            transform=ax_spaghetti.get_xaxis_transform(),
+        )
+
+    ax_spaghetti.set_title(
+        "Training Spaghetti + Checkpoint Test Performance "
+        f"(games/table={config.games_per_table}, pretrain={config.pretrain_games}, "
+        f"eval games/table={config.eval_table_len})"
+    )
     ax_spaghetti.set_ylabel("train reward (moving avg)")
     ax_test.set_xlabel("games trained")
     ax_test.set_ylabel("test reward")
@@ -304,6 +380,7 @@ def plot_family_spaghetti(
     ax: Axes,
     color: str,
     family_name: str,
+    plot_10pct_line: bool = True,
 ) -> None:
     window = 50
     curves = [_get_curve(agent_rewards, window) for agent_rewards in rewards]
@@ -318,7 +395,7 @@ def plot_family_spaghetti(
             )
 
     for x in temp_10pct_games:
-        if x >= 0:
+        if plot_10pct_line and x >= 0:
             ax.axvline(x, color=color, linestyle=":", linewidth=1.2, alpha=0.7)
             ax.text(
                 x,
@@ -334,7 +411,7 @@ def plot_family_spaghetti(
             )
 
     for x in dt_10pct_games:
-        if x >= 0:
+        if plot_10pct_line and x >= 0:
             ax.axvline(x, color=color, linestyle=":", linewidth=1.2, alpha=0.7)
             ax.text(
                 x,
@@ -401,15 +478,35 @@ def _build_table(agent_strategy: AgentStrategy, num_opponents: int) -> Table:
     return Table(players)
 
 
-def _play_one_game(
-    strategy: AgentStrategy,
-    num_opponents: int | None,
-    seed: int,
-) -> int:
+def _starts_new_table(game_num: int, config: ExperimentConfig) -> bool:
+    """Does training game number `game_num` (0-based) begin a fresh table?
+
+    - during pretraining every game gets a fresh table (no exchange)
+    - afterwards a fresh table is built every `games_per_table` games
+    """
+    if game_num < config.pretrain_games:
+        return True
+    return (game_num - config.pretrain_games) % config.games_per_table == 0
+
+
+def _new_table(
+    strategy: AgentStrategy, num_opponents: int | None, seed: int
+) -> Table:
+    # The number of opponents is fixed for the whole life of a table, so when it is
+    # random it is drawn once per table (from the seed of the table's first game).
     _set_seed(seed)
     if num_opponents is None:
         num_opponents = random.choice([3, 4, 5, 6])
-    table = _build_table(strategy, num_opponents)
+    return _build_table(strategy, num_opponents)
+
+
+def _play_game(
+    table: Table, strategy: AgentStrategy, seed: int, new_table: bool
+) -> int:
+    # A freshly built table was already seeded by _new_table; a reused one is re-seeded
+    # so every game is reproducible from its own seed.
+    if not new_table:
+        _set_seed(seed)
     table.game()
     return strategy.last_reward or 0
 
@@ -419,19 +516,25 @@ def _evaluate_agent(
     num_games: int,
     num_opponents: int | None,
     eval_seeds: list[int],
+    batch_size: int = 1,
+    games_per_table: int = 1,
 ) -> np.ndarray:
     was_frozen = agent.frozen
     agent.freeze()
     prev_temp = agent.temperature
-    agent.temperature = 0.01 
-    strategy = AgentStrategy(agent, batch_size=config.batch_size) 
+    agent.temperature = 0.01
+    strategy = AgentStrategy(agent, batch_size=batch_size)
+    if num_opponents is None:
+        num_opponents = 3
     rewards = []
+    table: Table | None = None
     for i in range(num_games):
         seed = eval_seeds[i]
-        if num_opponents is None:
-            num_opponents = 3
-        reward = _play_one_game(strategy, num_opponents, seed)
-        rewards.append(reward)
+        new_table = i % games_per_table == 0
+        if new_table:
+            table = _new_table(strategy, num_opponents, seed)
+        assert table is not None
+        rewards.append(_play_game(table, strategy, seed, new_table))
     if not was_frozen:
         agent.unfreeze()
     agent.temperature = prev_temp
@@ -462,10 +565,10 @@ if __name__ == "__main__":
     batch_size = 5
 
     families: dict[str, Callable[[], Agent]] = {
-            "Linear": lambda: Agent(LinearChooser(dt=batch_size*0.6, temperature=5)), 
-            "SSA": lambda: Agent(StateScorerChooser(dt=batch_size*0.6, temperature=5)),            
-            "AC": lambda: Agent(ActorCriticChooser(4, 0., dt = batch_size*0.2, temperature=5)),
-            "MLP64": lambda: Agent(MLPChooser((64,), dt = batch_size*0.1, temperature=3)),
+            # "Linear": lambda: Agent(LinearChooser(dt=batch_size*0.6, temperature=5)),
+            "SSA": lambda: Agent(StateScorerChooser(dt=batch_size*0.6, temperature=5)),
+            # "AC": lambda: Agent(ActorCriticChooser(4, 0., dt = batch_size*0.2, temperature=5)),
+            # "MLP64": lambda: Agent(MLPChooser((64,), dt = batch_size*0.1, temperature=3)),
             # "MLP128": lambda: Agent(MLPChooser((128,), dt = batch_size*0.1, temperature=3)),
             # "MLP64-32": lambda: Agent(MLPChooser((64, 32), dt = batch_size*0.1, temperature=3)),
             # "MLP64-32-16": lambda: Agent(MLPChooser((64, 32, 16), dt = batch_size*0.1, temperature=3)),
@@ -475,14 +578,19 @@ if __name__ == "__main__":
     }
 
     config = ExperimentConfig(
-        num_agents=5,
+        num_agents=3,
         num_opponents=3,
-        checkpoint_interval=500,
-        max_games=5000,
+        checkpoint_interval=100,
+        max_games=2000,
         test_games_per_checkpoint=100,
-        output_dir="AgentFamily",
-        anneal_every_games=250,
-        batch_size=batch_size
+        output_dir="AgentFamilyExchange",
+        anneal_every_games=50,
+        batch_size=batch_size,
+        # --- exchange ---
+        games_per_table=10,        # 1 = old behaviour (no exchange)
+        pretrain_games=1000,       # 0 = exchange from the start
+        eval_games_per_table=None, # None = same as games_per_table, 1 = evaluate without exchange
+        plot_10pct_line=False
     )
 
     run_experiment(families, config)
