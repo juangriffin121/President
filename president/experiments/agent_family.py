@@ -603,10 +603,10 @@ if __name__ == "__main__":
     batch_size = 5
 
     families: dict[str, Callable[[], Agent]] = {
-            "Linear": lambda: Agent(LinearChooser(dt=batch_size*0.6, temperature=5)),
-            "SSA": lambda: Agent(StateScorerChooser(dt=batch_size*0.6, temperature=5)),
+            #"Linear": lambda: Agent(LinearChooser(dt=batch_size*0.6, temperature=5)),
+            #"SSA": lambda: Agent(StateScorerChooser(dt=batch_size*0.6, temperature=5)),
             "AC": lambda: Agent(ActorCriticChooser(4, 0.5, dt = batch_size*0.2, temperature=5)),
-            "MLP64": lambda: Agent(MLPChooser((64,), dt = batch_size*0.1, temperature=3)),
+            #"MLP64": lambda: Agent(MLPChooser((64,), dt = batch_size*0.1, temperature=3)),
             # "MLP128": lambda: Agent(MLPChooser((128,), dt = batch_size*0.1, temperature=3)),
             # "MLP64-32": lambda: Agent(MLPChooser((64, 32), dt = batch_size*0.1, temperature=3)),
             # "MLP64-32-16": lambda: Agent(MLPChooser((64, 32, 16), dt = batch_size*0.1, temperature=3)),

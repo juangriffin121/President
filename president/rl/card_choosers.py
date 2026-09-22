@@ -511,8 +511,10 @@ class ActorCriticChooser(CardChooser):
         baseline = self.baseline
         dt = self.dt / len(games)
 
-        # Single shared iterator: consumes cache entries in play order across
-        # ALL games, so it doesn't restart at index 0 for every game.
+        critic_grads = None
+        state_grads = None
+        action_grads = None
+
         cache_iter = zip(
             self.state_encoder_cache,
             self.action_encoder_cache,
@@ -535,16 +537,32 @@ class ActorCriticChooser(CardChooser):
                 dR_dy = _softmax_grad(
                     probs, self.temperature, choice_idx, step_advantage
                 )[:, None]
-                dL_dv = 2 * (value_estimation - reward)
-                dL_dls = self.critic.backward(dL_dv, dt, critic_cache)
+                dL_dv = 4 * (value_estimation - reward)
+                dL_dls, c_grads = self.critic.backward(
+                    dL_dv, dt, critic_cache, accumulate=True
+                )
 
                 dR_dls = la @ dR_dy
                 dR_dla = ls @ dR_dy.T
 
-                self.state_encoder.backward(
-                    -dR_dls + self.critic_weight * dL_dls, dt, state_encoder_cache
+                _, s_grads = self.state_encoder.backward(
+                    -dR_dls + self.critic_weight * dL_dls,
+                    dt,
+                    state_encoder_cache,
+                    accumulate=True,
                 )
-                self.action_encoder.backward(-dR_dla, dt, action_encoder_cache)
+                _, a_grads = self.action_encoder.backward(
+                    -dR_dla, dt, action_encoder_cache, accumulate=True
+                )
+
+                critic_grads = _accum_grads(critic_grads, c_grads)
+                state_grads = _accum_grads(state_grads, s_grads)
+                action_grads = _accum_grads(action_grads, a_grads)
+
+        if critic_grads is not None:
+            self.critic.apply_grads(critic_grads, dt)
+            self.state_encoder.apply_grads(state_grads, dt)
+            self.action_encoder.apply_grads(action_grads, dt)
 
         batch_mean_reward = sum(r for _, r in games) / len(games)
         self.baseline += self.baseline_lr * (batch_mean_reward - self.baseline)
@@ -653,3 +671,8 @@ def _softmax_grad(y: ndarray, temp: float, choice_idx: int, reward: float) -> nd
     one_hot = np.zeros(y.shape[0])
     one_hot[choice_idx] = 1
     return reward * (one_hot - y) / max(temp, 1e-6)
+
+def _accum_grads(acc, new):
+    if acc is None:
+        return new
+    return [(a0 + b0, a1 + b1) for (a0, a1), (b0, b1) in zip(acc, new)]
