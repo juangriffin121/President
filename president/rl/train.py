@@ -168,9 +168,9 @@ if __name__ == "__main__":
     batch_size = 5
     # agent = Agent(ActorCriticChooser(4, 0., dt = batch_size*0.2, temperature=5))
     # agent = Agent(MLPChooser((128, 32, 8), dt=2, temperature=5))  
-    agent = Agent(MLPChooser((7, 3), dt = batch_size*0.1, temperature=3))
+    # agent = Agent(MLPChooser((7, 3), dt = batch_size*0.1, temperature=3))
     # agent = Agent(LinearChooser(dt=batch_size*0.6, temperature=5))  
-    # agent =  Agent(StateScorerChooser(dt=batch_size*0.6, temperature=5))    
+    agent =  Agent(StateScorerChooser(dt=batch_size*0.6, temperature=5))    
 
 
     p1 = Player("p1", Smallest())
@@ -181,7 +181,6 @@ if __name__ == "__main__":
 
     strategy, log = train(2000, agent, batch_size=batch_size, players=players)
 
-
     agent = strategy.agent
     rewards = np.array(log.rewards, dtype=float)
     plot_results(
@@ -189,21 +188,17 @@ if __name__ == "__main__":
         agent_name="Agent",
     )
 
-    agent.temperature = 0.01
-
-    log = test(2000, agent)
-    rewards = np.array(log.rewards, dtype=float)
-    plot_results(
-        rewards,
-        agent_name="Agent",
-    )
-
     players = [
-        Player("p1", Random()),
-        Player("p2", Random()),
-        Player("p3", Random()),
+        Player("p1", AgentStrategy(agent.clone())),
+        Player("p2", AgentStrategy(agent.clone())),
+        Player("p3", AgentStrategy(agent.clone())),
+        Player("p4", AgentStrategy(agent.clone())),
     ]
-    log = test(2000, agent, players=players)
+
+    for player in players:
+        player.strategy.agent.freeze()
+
+    strategy, log = train(2000, agent, batch_size=batch_size, players=players)
     rewards = np.array(log.rewards, dtype=float)
     plot_results(
         rewards,

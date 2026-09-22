@@ -64,12 +64,19 @@ class ExperimentConfig:
         # Set to 1 to always evaluate without exchange.
     )
 
+    freeze_after_pretrain: bool = (
+        False  # Freeze every agent when pretraining ends (from game `pretrain_games` on): no more learning,
+        # they keep playing exchange tables and get tested as usual. Use it as the baseline for
+        # "how much of the gain under exchange is just the exchange itself vs. actual learning".
+        # Needs pretrain_games > 0. Also turns off the checkpoint replacement (clone best + noise)
+        # after that point, since it would act as a hidden selection/learning step.
+    )
+
+    plot_10pct_line: bool = True
 
     @property
     def eval_table_len(self) -> int:
         return self.eval_games_per_table or self.games_per_table
-
-    plot_10pct_line: bool = True
 
 
 @dataclass
@@ -133,7 +140,8 @@ def run_family_experiment(
         f"[START] family={family_name} agents={config.num_agents} "
         f"checkpoints={len(checkpoints)} max_games={config.max_games} "
         f"games_per_table={config.games_per_table} pretrain_games={config.pretrain_games} "
-        f"eval_games_per_table={config.eval_table_len}"
+        f"eval_games_per_table={config.eval_table_len} "
+        f"freeze_after_pretrain={config.freeze_after_pretrain}"
     )
 
     for checkpoint in checkpoints:
@@ -149,6 +157,19 @@ def run_family_experiment(
             # until agent reaches checkpoint train agent
             while games_trained[agent_id] < checkpoint:
                 game_num = games_trained[agent_id]
+
+                # freeze once pretraining is over (evals keep it frozen, see _evaluate_agent)
+                if (
+                    config.freeze_after_pretrain
+                    and game_num >= config.pretrain_games
+                    and not agent.frozen
+                ):
+                    if agent.pending_games:
+                        agent.apply_batch()  # finish the partial pretraining batch first
+                    agent.freeze()
+                    print(
+                        f"[FREEZE] family={family_name} agent={agent_id} games={game_num}"
+                    )
 
                 # annealing
                 if game_num > 0 and game_num % config.anneal_every_games == 0:
@@ -222,10 +243,20 @@ def run_family_experiment(
         base_name = _agent_base_name(best_agent)
         ckpt_label = _checkpoint_label(checkpoint)
         exchange_tag = f"__X{config.games_per_table}" if config.games_per_table > 1 else ""
+        if config.freeze_after_pretrain:
+            exchange_tag += "F"
         best_name = f"{base_name}__{ckpt_label}__S__{config.num_opponents}{exchange_tag}.npz"
         best_agent.save(str(agents_dir / best_name))
 
-        if config.replacement_per_checkpoint > 0 and config.num_agents > 1:
+        # once agents are frozen, cloning the best over the worst (+ noise) would be a hidden
+        # selection step, so the population is left alone
+        agents_frozen = config.freeze_after_pretrain and checkpoint > config.pretrain_games
+        if agents_frozen:
+            print(
+                f"[POP] family={family_name} checkpoint={checkpoint} "
+                f"replacement skipped (agents frozen)"
+            )
+        elif config.replacement_per_checkpoint > 0 and config.num_agents > 1:
             ordered = np.argsort(np.array(test_means, dtype=float))
             worst_ids = [int(i) for i in ordered if int(i) != best_agent_id]
             replace_count = min(config.replacement_per_checkpoint, len(worst_ids))
@@ -271,6 +302,13 @@ def run_experiment(
         raise ValueError("pretrain_games must be between 0 and max_games")
     if config.eval_games_per_table is not None and config.eval_games_per_table <= 0:
         raise ValueError("eval_games_per_table must be > 0")
+    if config.freeze_after_pretrain and config.pretrain_games <= 0:
+        raise ValueError("freeze_after_pretrain needs pretrain_games > 0")
+    if config.freeze_after_pretrain and config.pretrain_games % config.batch_size != 0:
+        print(
+            "[WARN] pretrain_games is not a multiple of batch_size: the last partial batch is applied "
+            "at the freeze point, so the pretrained agents differ slightly from a non-frozen run at the same point."
+        )
     if config.games_per_table > 1 and (
         config.checkpoint_interval % config.games_per_table != 0
         or config.pretrain_games % config.games_per_table != 0
@@ -317,10 +355,10 @@ def plot(
             family_result.train_rewards,
             family_result.temp_10pct_games,
             family_result.dt_10pct_games,
+            config.plot_10pct_line,
             ax_spaghetti,
             color,
             family_name,
-            plot_10pct_line=config.plot_10pct_line
         )
         plot_family_test_results(
             family_result.test_rewards, checkpoints, ax_test, color, family_name
@@ -349,7 +387,7 @@ def plot(
         ax_spaghetti.text(
             config.pretrain_games,
             0.02,
-            "exchange on",
+            "exchange on, agents frozen" if config.freeze_after_pretrain else "exchange on",
             fontsize=8,
             rotation=90,
             va="bottom",
@@ -360,7 +398,7 @@ def plot(
     ax_spaghetti.set_title(
         "Training Spaghetti + Checkpoint Test Performance "
         f"(games/table={config.games_per_table}, pretrain={config.pretrain_games}, "
-        f"eval games/table={config.eval_table_len})"
+        f"eval games/table={config.eval_table_len}, frozen={config.freeze_after_pretrain})"
     )
     ax_spaghetti.set_ylabel("train reward (moving avg)")
     ax_test.set_xlabel("games trained")
@@ -377,10 +415,10 @@ def plot_family_spaghetti(
     rewards: np.ndarray,
     temp_10pct_games: np.ndarray,
     dt_10pct_games: np.ndarray,
+    plot_10pct_line: bool,
     ax: Axes,
     color: str,
     family_name: str,
-    plot_10pct_line: bool = True,
 ) -> None:
     window = 50
     curves = [_get_curve(agent_rewards, window) for agent_rewards in rewards]
@@ -565,10 +603,10 @@ if __name__ == "__main__":
     batch_size = 5
 
     families: dict[str, Callable[[], Agent]] = {
-            # "Linear": lambda: Agent(LinearChooser(dt=batch_size*0.6, temperature=5)),
+            "Linear": lambda: Agent(LinearChooser(dt=batch_size*0.6, temperature=5)),
             "SSA": lambda: Agent(StateScorerChooser(dt=batch_size*0.6, temperature=5)),
-            # "AC": lambda: Agent(ActorCriticChooser(4, 0., dt = batch_size*0.2, temperature=5)),
-            # "MLP64": lambda: Agent(MLPChooser((64,), dt = batch_size*0.1, temperature=3)),
+            "AC": lambda: Agent(ActorCriticChooser(4, 0.5, dt = batch_size*0.2, temperature=5)),
+            "MLP64": lambda: Agent(MLPChooser((64,), dt = batch_size*0.1, temperature=3)),
             # "MLP128": lambda: Agent(MLPChooser((128,), dt = batch_size*0.1, temperature=3)),
             # "MLP64-32": lambda: Agent(MLPChooser((64, 32), dt = batch_size*0.1, temperature=3)),
             # "MLP64-32-16": lambda: Agent(MLPChooser((64, 32, 16), dt = batch_size*0.1, temperature=3)),
@@ -578,19 +616,20 @@ if __name__ == "__main__":
     }
 
     config = ExperimentConfig(
-        num_agents=3,
+        num_agents=5,
         num_opponents=3,
-        checkpoint_interval=100,
-        max_games=2000,
+        checkpoint_interval=500,
+        max_games=6000,
         test_games_per_checkpoint=100,
         output_dir="AgentFamilyExchange",
-        anneal_every_games=50,
+        anneal_every_games=250,
         batch_size=batch_size,
+        plot_10pct_line=False,
         # --- exchange ---
         games_per_table=10,        # 1 = old behaviour (no exchange)
-        pretrain_games=1000,       # 0 = exchange from the start
+        pretrain_games=3000,       # 0 = exchange from the start
         eval_games_per_table=None, # None = same as games_per_table, 1 = evaluate without exchange
-        plot_10pct_line=False
+        freeze_after_pretrain=False, # True = baseline run: agents stop learning once pretraining ends
     )
 
     run_experiment(families, config)
