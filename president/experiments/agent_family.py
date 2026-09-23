@@ -604,8 +604,8 @@ if __name__ == "__main__":
 
     families: dict[str, Callable[[], Agent]] = {
             #"Linear": lambda: Agent(LinearChooser(dt=batch_size*0.6, temperature=5)),
-            #"SSA": lambda: Agent(StateScorerChooser(dt=batch_size*0.6, temperature=5)),
-            "AC": lambda: Agent(ActorCriticChooser(4, 0.5, dt = batch_size*0.2, temperature=5)),
+            "SSA": lambda: Agent(StateScorerChooser(dt=batch_size*0.6, temperature=5)),
+            # "AC": lambda: Agent(ActorCriticChooser(4, 0.5, dt = batch_size*0.2, temperature=5)),
             #"MLP64": lambda: Agent(MLPChooser((64,), dt = batch_size*0.1, temperature=3)),
             # "MLP128": lambda: Agent(MLPChooser((128,), dt = batch_size*0.1, temperature=3)),
             # "MLP64-32": lambda: Agent(MLPChooser((64, 32), dt = batch_size*0.1, temperature=3)),
@@ -626,7 +626,7 @@ if __name__ == "__main__":
         batch_size=batch_size,
         plot_10pct_line=False,
         # --- exchange ---
-        games_per_table=10,        # 1 = old behaviour (no exchange)
+        games_per_table=100,        # 1 = old behaviour (no exchange)
         pretrain_games=3000,       # 0 = exchange from the start
         eval_games_per_table=None, # None = same as games_per_table, 1 = evaluate without exchange
         freeze_after_pretrain=False, # True = baseline run: agents stop learning once pretraining ends

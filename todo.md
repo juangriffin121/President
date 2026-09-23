@@ -1,1 +1,0 @@
-- compare current agent family results with frozen agents after pretraining to compare the expected improvement in performance due to exchange benefiting better players, with the improvement due to actual learning of better strategies

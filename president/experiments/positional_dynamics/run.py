@@ -10,12 +10,12 @@ from president.ui import writes
 
 PLAYERS = 5
 GAMES = 10000
-trial_id = f"{PLAYERS}_Linear"
+trial_id = f"{PLAYERS}_SSA"
 PATH = f"president/experiments/positional_dynamics/run{trial_id}.csv"
 TRAINING_GAMES = 5000
 
 
-def log(trial_id: int,game: int, table: Table) -> GameLogEntry:
+def log(trial_id: str,game: int, table: Table) -> GameLogEntry:
 
     president=table.president
     vice_president=table.vice_president
@@ -37,10 +37,12 @@ def log(trial_id: int,game: int, table: Table) -> GameLogEntry:
 
 writes.set_silent(True)
 set_sleep_enabled(False)
-a = Agent.load("Linears/agents/L__2k__S__None.npz")
+a = Agent.load("AgentFamilyExchange/agents/StateScorerChooser__6k__S__4__X10.npz")
 players = [Player(f"Player {i}",AgentStrategy(a.clone(perturb_std=0), HandStrengthPredictor())) for i in range(PLAYERS)]
 for player in players:
     player.strategy.agent.freeze()
+    player.strategy.agent.temperature = 0.01
+
 t = Table(players)
 print(t.players)
 writer = GameLogWriter(PATH)
