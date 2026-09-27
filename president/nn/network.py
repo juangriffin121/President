@@ -25,11 +25,24 @@ class NeuralNetwork:
         return output, cache
 
     def backward(
-        self, grad_output: np.ndarray, dt, cache: list[np.ndarray]
-    ) -> np.ndarray:
+        self, grad_output: np.ndarray, dt, cache: list[np.ndarray], accumulate: bool = False
+    ):
+        grads = []
         for layer, layer_cache in zip(reversed(self.layers), reversed(cache)):
-            grad_output = layer.backward(grad_output, dt, layer_cache)
+            if accumulate and hasattr(layer, "pesos"):
+                grad_output, layer_grad = layer.backward(grad_output, dt, layer_cache, accumulate=True)
+                grads.append(layer_grad)
+            else:
+                grad_output = layer.backward(grad_output, dt, layer_cache)
+        if accumulate:
+            return grad_output, list(reversed(grads))
         return grad_output
+
+    def apply_grads(self, grads: list[tuple[np.ndarray, np.ndarray]], dt: float) -> None:
+        linear_layers = [layer for layer in self.layers if isinstance(layer, Linear)]
+        for layer, (grad_pesos, grad_sesgos) in zip(linear_layers, grads):
+            layer.pesos -= grad_pesos * dt
+            layer.sesgos -= grad_sesgos * dt
 
     def __getitem__(self, index):
         return self.layers[index]
@@ -86,7 +99,7 @@ class NeuralNetwork:
 
     def load(self, payload: dict[str, np.ndarray]) -> None:
         num_layers = int(payload["num_linear_layers"])
-        assert len(self.layers) == num_layers
+        assert len([layer for layer in self.layers if isinstance(layer, Linear)]) == num_layers
         weights = [payload[f"w{i}"] for i in range(num_layers)]
         biases = [payload[f"b{i}"] for i in range(num_layers)]
         w_idx = 0

@@ -1,12 +1,13 @@
 import numpy as np
 
-from president.rl.agent import LinearAgent
+from president.rl.agent import Agent
+from president.rl.card_choosers import LinearChooser
 from president.rl.train import test as eval_test
 from president.rl.train import train
 
 
 def test_train_returns_logs_with_expected_lengths() -> None:
-    agent = LinearAgent()
+    agent = Agent(LinearChooser())
     _, log = train(num_games=6, agent=agent)
 
     assert len(log.rewards) == 6
@@ -15,7 +16,7 @@ def test_train_returns_logs_with_expected_lengths() -> None:
 
 
 def test_train_anneals_dt_and_temperature_at_expected_intervals() -> None:
-    agent = LinearAgent()
+    agent = Agent(LinearChooser())
     initial_dt = agent.dt
     initial_temp = agent.temperature
 
@@ -28,7 +29,7 @@ def test_train_anneals_dt_and_temperature_at_expected_intervals() -> None:
 
 
 def test_eval_test_returns_expected_log_length_and_freezes_agent() -> None:
-    agent = LinearAgent()
+    agent = Agent(LinearChooser())
     log = eval_test(num_games=7, agent=agent)
 
     assert len(log.rewards) == 7

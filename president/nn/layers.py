@@ -10,7 +10,7 @@ class Layer:
     def forward(self, Input):
         raise NotImplementedError("forward method must be implemented in each layer")
 
-    def backward(self, grad_output, dt, cache):
+    def backward(self, grad_output, dt, cache, accumulate: bool = False):
         raise NotImplementedError("backward method must be implemented in each layer")
 
     def clone(self, perturb_std: float):
@@ -60,14 +60,19 @@ class Linear(Layer):
             Input,
         )  # (O, I) @ (I, :) + (O, 1) = (O, :)
 
-    def backward(self, grad_output: ndarray, dt, cache: ndarray):
+    def backward(self, grad_output: ndarray, dt, cache: ndarray, accumulate: bool = False):
         input_ = cache  # (I, :)
+        grad_pesos = None
+        grad_sesgos = None
+        grad_input = self.pesos.T @ grad_output  # (I, O) @ (O, :) = (I, :)
         if not hasattr(self, "frozen") or not self.frozen:
             grad_pesos = grad_output @ input_.T  # (O, :) @ (:, I)
             grad_sesgos = grad_output.sum(axis=1, keepdims=True)  # (O, :) -> (O, 1)
-            self.pesos -= grad_pesos * dt
-            self.sesgos -= grad_sesgos * dt
-        grad_input = self.pesos.T @ grad_output  # (I, O) @ (O, :) = (I, :)
+            if not accumulate:
+                self.pesos -= grad_pesos * dt
+                self.sesgos -= grad_sesgos * dt
+        if accumulate:
+            return grad_input, (grad_pesos, grad_sesgos)
         return grad_input
 
     def clone(self, perturb_std: float = 0.0):

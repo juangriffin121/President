@@ -2,7 +2,8 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from president.player import Player, set_sleep_enabled
-from president.rl.agent import Agent, LinearAgent, MLPAgent
+from president.rl.agent import Agent
+from president.rl.card_choosers import LinearChooser, MLPChooser
 from president.rl.hand_strength import HandStrengthPredictor
 from president.strategy import AgentStrategy, Smallest
 from president.table import Table
@@ -30,7 +31,7 @@ def train(
     set_sleep_enabled(False)
 
     if agent is None:
-        agent = MLPAgent((20,))  # LinearAgent()
+        agent = Agent(MLPChooser((20,)))  # Agent(LinearChooser())
 
     if hand_strength_predictor is None:
         hand_strength_predictor = HandStrengthPredictor()
@@ -68,7 +69,6 @@ def train(
             log.extras.append(log_hook(game_idx, agent_strategy, t))
 
     print(hand_strength_predictor.w)
-    print(hand_strength_predictor.b)
     return agent_strategy, log
 
 
@@ -152,7 +152,7 @@ if __name__ == "__main__":
         hand_strength_predictor_name="mlp_hsp",
     )
 
-    l_strategy, l_log = train(3000, LinearAgent())
+    l_strategy, l_log = train(3000, Agent(LinearChooser()))
     l = l_strategy.agent
     l_hand_strength_predictor = l_strategy.hand_strength_predictor
 

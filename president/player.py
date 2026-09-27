@@ -34,8 +34,8 @@ class Player:
     def choose_worst(self, count):
         return self.strategy.choose_worst(count, self.hand)
 
-    def on_deal(self, total_players: int):
-        self.strategy.on_deal(self.hand, total_players)
+    def observe_hand(self, total_players: int):
+        self.strategy.observe_hand(self.hand, total_players)
 
     def inform_of_results(self, performance: int):
         self.strategy.inform_of_results(performance, self.name)
